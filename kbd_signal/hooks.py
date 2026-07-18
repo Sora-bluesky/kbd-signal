@@ -1,0 +1,46 @@
+"""Dispatch Claude Code hook events / Codex notify events to states.
+
+Design rule: hook entry points must NEVER block or fail the agent.
+Every path exits 0, errors only go to the log file.
+"""
+
+import json
+import sys
+
+from . import states
+
+
+def handle_claude(stdin=None):
+    """Claude Code hooks pipe a JSON payload on stdin. One command serves
+    all registered events, dispatched by hook_event_name."""
+    try:
+        payload = json.load(stdin or sys.stdin)
+    except ValueError:
+        return
+    event = payload.get("hook_event_name", "")
+
+    if event == "PermissionRequest":
+        states.set_state("waiting")
+    elif event == "PostToolUse":
+        # Fast path: only touch HID when a "waiting" signal needs clearing
+        # (fires on every tool call, so stay cheap by default).
+        if states.load_state()["active"] == "waiting":
+            states.restore()
+    elif event == "Stop":
+        states.set_state("done")
+    elif event == "SessionEnd":
+        if states.is_active():
+            states.restore()
+
+
+def handle_codex(argv):
+    """Codex CLI notify passes one JSON argument:
+    {"type": "agent-turn-complete", ...}"""
+    if not argv:
+        return
+    try:
+        payload = json.loads(argv[-1])
+    except ValueError:
+        return
+    if payload.get("type") == "agent-turn-complete":
+        states.set_state("done")

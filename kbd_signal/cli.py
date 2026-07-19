@@ -7,14 +7,24 @@ import time
 from . import states, via
 
 
-def cmd_detect(_args):
-    import hid
-    found = [d for d in hid.enumerate(via.VENDOR_ID)
-             if d.get("usage_page") == via.USAGE_PAGE
-             and d.get("usage") == via.USAGE]
+def cmd_detect(args):
+    from . import config
+    if getattr(args, "all", False):
+        found = via.enumerate_raw_hid(None)
+        if not found:
+            print("No raw HID (0xFF60) interfaces found on any device.")
+            return 1
+        for d in found:
+            print(f"found: {d.get('manufacturer_string')} {d.get('product_string')} "
+                  f"(VID={d['vendor_id']:#06x} PID={d['product_id']:#06x})")
+        print('\nPut vendor_id/product_id into config.json under "device" '
+              "to target one of these.")
+        return 0
+    found = via.enumerate_raw_hid(config.device()["vendor_id"])
     if not found:
-        print("Keychron raw HID interface not found. "
-              "Connect via USB cable (Cable mode, or BT mode with cable attached).")
+        print("Configured keyboard's raw HID interface not found. "
+              "Connect via USB cable (rear switch on Cable). "
+              "Use `kbd-signal detect --all` to list every raw-HID device.")
         return 1
     for d in found:
         print(f"found: {d.get('product_string')} "
@@ -73,13 +83,17 @@ def cmd_hook(args):
 
 def main(argv=None):
     p = argparse.ArgumentParser(prog="kbd-signal",
-                                description="Agent status -> Keychron K8 Pro backlight")
+                                description="Agent status -> VIA keyboard backlight")
     sub = p.add_subparsers(dest="command", required=True)
 
-    sub.add_parser("detect", help="list device and current lighting").set_defaults(fn=cmd_detect)
+    sp = sub.add_parser("detect", help="list device and current lighting")
+    sp.add_argument("--all", action="store_true",
+                    help="list every raw-HID (0xFF60) device regardless of "
+                         "the configured vendor id")
+    sp.set_defaults(fn=cmd_detect)
 
     sp = sub.add_parser("set", help="enter a signal state")
-    sp.add_argument("state", choices=sorted(states.PATTERNS))
+    sp.add_argument("state", choices=sorted(states.STATE_NAMES))
     sp.set_defaults(fn=cmd_set)
 
     sp = sub.add_parser("restore", help="restore baseline lighting")

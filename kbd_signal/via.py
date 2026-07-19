@@ -1,26 +1,27 @@
-"""VIA v3 raw HID protocol layer for Keychron K8 Pro (stock firmware).
+"""VIA raw HID protocol layer for VIA-compatible RGB keyboards.
 
-Speaks the QMK RGB Matrix custom channel (id 3) defined in
+Defaults target the Keychron K8 Pro (custom channel 3 from
 keyboards/keychron/k8_pro/via_json/k8_pro_ansi_rgb.json:
-  brightness=1, effect=2, speed=3, color(hue,sat)=4
+brightness=1, effect=2, speed=3, color(hue,sat)=4); vendor id, product
+filter, v3 channel and effect indices are all overridable via
+config.json — see kbd_signal.config.
 
 All writes are RAM-only (id_custom_set_value). id_custom_save (0x09) is
 deliberately never sent, so a power cycle always restores the user's
 persisted settings and the EEPROM is never worn.
 """
 
+from . import config
+
 # `import hid` is deferred into the functions below: importing this module
 # must stay cheap for the hot no-op hook path (no hidapi DLL load).
 
-VENDOR_ID = 0x3434  # Keychron
 USAGE_PAGE = 0xFF60  # QMK raw HID
 USAGE = 0x61
 
 CMD_GET_PROTOCOL_VERSION = 0x01
 CMD_CUSTOM_SET = 0x07  # VIA v2: id_lighting_set_value (same byte)
 CMD_CUSTOM_GET = 0x08
-
-CHANNEL_RGB_MATRIX = 3  # v3 only
 
 # Logical value ids -> (VIA v2 lighting id, VIA v3 rgb_matrix channel id).
 # Shipped K8 Pro stock firmware speaks VIA protocol 9 (v2): no channel byte,
@@ -38,11 +39,6 @@ _VALUE_IDS = {
     VALUE_COLOR: (0x83, 4),
 }
 
-# Effect indices from the official via_json (stock firmware)
-EFFECT_NONE = 0
-EFFECT_SOLID_COLOR = 1
-EFFECT_BREATHING = 2
-
 REPORT_SIZE = 32  # QMK RAW_EPSIZE; hidapi pads to the actual report length
 
 
@@ -50,27 +46,43 @@ class DeviceNotFound(Exception):
     pass
 
 
-def find_device_path():
+def enumerate_raw_hid(vendor_id=None):
+    """All raw-HID (0xFF60) interfaces, optionally filtered by VID.
+    `kbd-signal detect --all` uses vendor_id=None to help users of other
+    keyboards find their VID/PID."""
     import hid
-    candidates = [
-        d for d in hid.enumerate(VENDOR_ID)
+    return [
+        d for d in hid.enumerate(vendor_id or 0)
         if d.get("usage_page") == USAGE_PAGE and d.get("usage") == USAGE
     ]
+
+
+def find_device_path(dev_cfg=None):
+    dev_cfg = dev_cfg or config.device()
+    candidates = enumerate_raw_hid(dev_cfg["vendor_id"])
+    if dev_cfg.get("product_id") is not None:
+        candidates = [d for d in candidates
+                      if d["product_id"] == dev_cfg["product_id"]]
     if not candidates:
         raise DeviceNotFound(
-            "Keychron raw HID interface not found (wired USB required)")
-    # Prefer a K8 in case multiple Keychron boards are attached
-    for d in candidates:
-        if "K8" in (d.get("product_string") or ""):
-            return d["path"]
+            f"raw HID interface not found for VID "
+            f"{dev_cfg['vendor_id']:#06x} (wired USB required)")
+    # Prefer the configured product substring if several boards are attached
+    match = dev_cfg.get("product_match")
+    if match:
+        for d in candidates:
+            if match in (d.get("product_string") or ""):
+                return d["path"]
     return candidates[0]["path"]
 
 
 class Keyboard:
-    def __init__(self):
+    def __init__(self, dev_cfg=None):
         import hid
+        self._cfg = dev_cfg or config.device()
+        self._channel = self._cfg["v3_channel"]
         self._dev = hid.device()
-        self._dev.open_path(find_device_path())
+        self._dev.open_path(find_device_path(self._cfg))
         self.protocol = self._probe_protocol()
         self._v3 = self.protocol >= 11
 
@@ -125,7 +137,7 @@ class Keyboard:
         # _request also consumes the firmware's echo of this SET, keeping the
         # input queue clean for later reads. A missed echo is not fatal.
         if self._v3:
-            self._request(CMD_CUSTOM_SET, CHANNEL_RGB_MATRIX, v3_id, *data,
+            self._request(CMD_CUSTOM_SET, self._channel, v3_id, *data,
                           tries=2, match=3)
         else:
             self._request(CMD_CUSTOM_SET, v2_id, *data, tries=2, match=2)
@@ -133,7 +145,7 @@ class Keyboard:
     def get_value(self, value_id, length=1):
         v2_id, v3_id = _VALUE_IDS[value_id]
         if self._v3:
-            resp = self._request(CMD_CUSTOM_GET, CHANNEL_RGB_MATRIX, v3_id)
+            resp = self._request(CMD_CUSTOM_GET, self._channel, v3_id)
         else:
             resp = self._request(CMD_CUSTOM_GET, v2_id)
         if resp is None:

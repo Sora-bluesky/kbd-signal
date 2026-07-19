@@ -18,11 +18,9 @@ import subprocess
 import sys
 import time
 
-from . import via
+from . import config, via
 
-STATE_DIR = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")),
-                         "kbd-signal")
-CONFIG_FILE_NAME = "config.json"  # {"restore": "baseline" | "off"}
+STATE_DIR = config.STATE_DIR
 STATE_FILE = os.path.join(STATE_DIR, "state.json")
 # Marker for cheap hook-side guards (`if exist active.flag ...`) so hot hooks
 # like PostToolUse can skip launching Python entirely when idle.
@@ -31,18 +29,22 @@ LOG_FILE = os.path.join(STATE_DIR, "kbd-signal.log")
 
 DONE_RESTORE_AFTER = 5  # seconds
 
-# Effect indices (mirror via.EFFECT_*; literal here so importing this module
-# never pulls in the hidapi DLL). QMK hue wheel: red=0, orange=21, green=85
-_EFFECT_SOLID_COLOR = 1
-_EFFECT_BREATHING = 2
-PATTERNS = {
-    "waiting": dict(effect=_EFFECT_BREATHING, hue=21, sat=255,
-                    speed=170, brightness=255),
-    "done": dict(effect=_EFFECT_SOLID_COLOR, hue=85, sat=255,
-                 brightness=255),
-    "error": dict(effect=_EFFECT_BREATHING, hue=0, sat=255,
-                  speed=255, brightness=255),
-}
+STATE_NAMES = ("waiting", "done", "error")
+
+
+def patterns():
+    """State -> lighting pattern, with effect indices from config so other
+    VIA keyboards (different enabled-animation lists) can remap them.
+    QMK hue wheel: red=0, orange=21, green=85."""
+    fx = config.device()["effects"]
+    return {
+        "waiting": dict(effect=fx["breathing"], hue=21, sat=255,
+                        speed=170, brightness=255),
+        "done": dict(effect=fx["solid"], hue=85, sat=255,
+                     brightness=255),
+        "error": dict(effect=fx["breathing"], hue=0, sat=255,
+                      speed=255, brightness=255),
+    }
 
 
 def log(msg):
@@ -93,11 +95,7 @@ def _state_lock(timeout=3.0):
 
 
 def load_config():
-    try:
-        with open(os.path.join(STATE_DIR, CONFIG_FILE_NAME), encoding="utf-8") as f:
-            return json.load(f)
-    except (OSError, ValueError):
-        return {}
+    return config.load()
 
 
 def load_state():
@@ -161,7 +159,7 @@ def _release_from_waiting(state, name, session):
 
 def set_state(name, session=None):
     """Enter a signal state. Silently no-ops if the keyboard is absent."""
-    pattern = PATTERNS[name]
+    pattern = patterns()[name]
     try:
         kb = via.Keyboard()
     except (via.DeviceNotFound, OSError) as e:

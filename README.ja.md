@@ -2,7 +2,7 @@
 
 [English](README.md) | [日本語](README.ja.md)
 
-Claude Code / Codex のステータス(承認待ち・タスク完了・エラー)を **Keychron K8 Pro のバックライト演出**で通知する Windows 用 CLI。
+Claude Code / Codex のステータス(承認待ち・タスク完了・エラー)を **VIA 対応キーボードのバックライト演出**で通知する Windows 用 CLI(デフォルト設定は Keychron K8 Pro)。
 
 純正ファームウェアのまま、VIA raw HID プロトコル(usage page `0xFF60`)で RGB マトリクスを直接制御する。ファームウェア書き換え不要(v2/v3 プロトコルは自動判別)。
 
@@ -87,9 +87,24 @@ notify = ["py", "-3.13", "C:\\path\\to\\codex-notify-wrapper.py"]
 - VID `0x3434`。PID は配列で異なるため VID + usage page 0xFF60 で検出
 - 実測: BT モード+ケーブル接続では USB 列挙はされる(`KEEP_USB_CONNECTION_IN_BLUETOOTH_MODE`)が 0xFF60 raw HID は出ない。背面スイッチ Cable が必須
 
-## ロードマップ
+## 他のキーボードで使う(v0.2.0〜)
 
-- **v0.2.0(対応予定): VIA 対応キーボードへの汎用化。** プロトコル層は K8 Pro 固有ではない(v2 の value id は VIA 仕様で固定、Solid Color=1 は QMK 全機種共通)。VID/PID・v3 チャネル番号・エフェクト番号の3点を `config.json` に外出しすれば、大半の VIA 対応 RGB キーボードで動く見込み。新しい機種のエフェクト番号調査用に `kbd-signal raw-effect <n>` を用意済み
+`config.json` の `device` セクションで VID/PID・v3 チャネル・エフェクト番号を差し替えられる:
+
+```json
+{
+  "restore": "off",
+  "device": {
+    "vendor_id": "0x3434",
+    "product_id": null,
+    "product_match": "K8",
+    "v3_channel": 3,
+    "effects": {"solid": 1, "breathing": 2}
+  }
+}
+```
+
+新しい機種での手順: `kbd-signal detect --all` で VID/PID を調べて設定 → `kbd-signal raw-effect <n>` で solid/breathing の番号を特定して `effects` に設定 →(VIA v3 機なら)`v3_channel` を機種の VIA 定義に合わせる → `kbd-signal test`。RGB 非搭載機(単色バックライト)は色で状態を区別する設計のため対象外。
 
 ## License
 

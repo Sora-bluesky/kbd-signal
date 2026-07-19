@@ -58,10 +58,10 @@ The Fn backlight on/off flag is not readable over VIA, which is why `"off"` exis
 Register the same command for `PermissionRequest`, `PostToolUse`, `Stop`, and `SessionEnd` in your user-scope `settings.json` (events are dispatched internally by `hook_event_name`):
 
 ```json
-{"type": "command", "command": "C:/Users/<you>/AppData/Local/Programs/Python/Python313/Scripts/kbd-signal.exe hook claude", "timeout": 5}
+{"type": "command", "command": "py -3.13 -m kbd_signal hook claude", "timeout": 5}
 ```
 
-**Use forward slashes in the command path.** Hook commands may be executed through a POSIX shell where backslashes are escape characters — a backslashed path fails silently and the hook simply never signals. The entry point is cheap when idle (the hidapi DLL is imported lazily), so the same command is fine for hot hooks like `PostToolUse`.
+**Do not put a filesystem path in the program position.** Hook commands may run through either `cmd` or a POSIX shell: backslashed paths get eaten as escapes by the POSIX shell, and forward-slashed program paths fail under `cmd` with "Access is denied" — both silently, so the hook simply never signals (measured on Windows 11). A PATH-resolved launcher (`py -3.13 -m kbd_signal ...`) works under both. The entry point is cheap when idle (the hidapi DLL is imported lazily), so the same command is fine for hot hooks like `PostToolUse`.
 
 ## Protocol notes (verified on hardware)
 

@@ -20,7 +20,7 @@ Before signaling, the current lighting (effect / speed / brightness / color) is 
 
 - Windows, Python 3.11+ (`hidapi` is the only dependency)
 - Keychron K8 Pro connected via **USB cable with the rear switch set to "Cable"**. Raw HID is not available over Bluetooth — measured: in BT mode with the cable attached, the USB HID collections enumerate but the `0xFF60` raw interface does not
-- When the keyboard is absent (BT mode, unplugged), every command silently no-ops with exit 0 — hooks are never blocked
+- When the keyboard is absent (BT mode, unplugged), the hook-facing commands (`hook`, `set`, `restore`) silently no-op with exit 0 — hooks are never blocked. Diagnostic commands (`detect`, `test`, `raw-effect`) report the missing device and exit 1
 - Do not run the VIA app / Keychron Launcher at the same time (concurrent raw HID writes race)
 - Codex CLI is not integrated in v1: its single `notify` slot is already occupied by the Codex desktop app's own notifier (see README.ja.md for a manual wrapper recipe)
 

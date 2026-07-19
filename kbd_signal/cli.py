@@ -20,7 +20,9 @@ def cmd_detect(_args):
         print(f"found: {d.get('product_string')} "
               f"(VID={d['vendor_id']:#06x} PID={d['product_id']:#06x})")
     with via.Keyboard() as kb:
+        proto = kb.protocol
         snap = kb.snapshot()
+    print(f"VIA protocol: {proto} ({'v3 custom channel' if proto >= 11 else 'v2 lighting'})")
     print(f"current: effect={snap['effect']} speed={snap['speed']} "
           f"brightness={snap['brightness']} hue,sat={snap['color']}")
     return 0

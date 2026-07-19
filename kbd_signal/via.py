@@ -15,14 +15,27 @@ VENDOR_ID = 0x3434  # Keychron
 USAGE_PAGE = 0xFF60  # QMK raw HID
 USAGE = 0x61
 
-CMD_CUSTOM_SET = 0x07
+CMD_GET_PROTOCOL_VERSION = 0x01
+CMD_CUSTOM_SET = 0x07  # VIA v2: id_lighting_set_value (same byte)
 CMD_CUSTOM_GET = 0x08
 
-CHANNEL_RGB_MATRIX = 3
-VALUE_BRIGHTNESS = 1
-VALUE_EFFECT = 2
-VALUE_SPEED = 3
-VALUE_COLOR = 4  # hue, sat
+CHANNEL_RGB_MATRIX = 3  # v3 only
+
+# Logical value ids -> (VIA v2 lighting id, VIA v3 rgb_matrix channel id).
+# Shipped K8 Pro stock firmware speaks VIA protocol 9 (v2): no channel byte,
+# lighting ids 0x80-0x83. Newer firmware (protocol >= 11) uses custom
+# channel 3 with ids 1-4. Detected at open time via 0x01.
+VALUE_BRIGHTNESS = "brightness"
+VALUE_EFFECT = "effect"
+VALUE_SPEED = "speed"
+VALUE_COLOR = "color"  # hue, sat
+
+_VALUE_IDS = {
+    VALUE_BRIGHTNESS: (0x80, 1),
+    VALUE_EFFECT: (0x81, 2),
+    VALUE_SPEED: (0x82, 3),
+    VALUE_COLOR: (0x83, 4),
+}
 
 # Effect indices from the official via_json (stock firmware)
 EFFECT_NONE = 0
@@ -55,6 +68,15 @@ class Keyboard:
     def __init__(self):
         self._dev = hid.device()
         self._dev.open_path(find_device_path())
+        self.protocol = self._probe_protocol()
+        self._v3 = self.protocol >= 11
+
+    def _probe_protocol(self):
+        self._write(CMD_GET_PROTOCOL_VERSION)
+        resp = self._dev.read(64, 500)
+        if not resp or resp[0] != CMD_GET_PROTOCOL_VERSION:
+            raise IOError(f"protocol probe failed: {resp!r}")
+        return (resp[1] << 8) | resp[2]
 
     def close(self):
         self._dev.close()
@@ -73,14 +95,23 @@ class Keyboard:
             raise IOError("HID write failed")
 
     def set_value(self, value_id, *data):
-        self._write(CMD_CUSTOM_SET, CHANNEL_RGB_MATRIX, value_id, *data)
+        v2_id, v3_id = _VALUE_IDS[value_id]
+        if self._v3:
+            self._write(CMD_CUSTOM_SET, CHANNEL_RGB_MATRIX, v3_id, *data)
+        else:
+            self._write(CMD_CUSTOM_SET, v2_id, *data)
 
     def get_value(self, value_id, length=1):
-        self._write(CMD_CUSTOM_GET, CHANNEL_RGB_MATRIX, value_id)
+        v2_id, v3_id = _VALUE_IDS[value_id]
+        if self._v3:
+            self._write(CMD_CUSTOM_GET, CHANNEL_RGB_MATRIX, v3_id)
+        else:
+            self._write(CMD_CUSTOM_GET, v2_id)
         resp = self._dev.read(64, 500)
         if not resp or resp[0] != CMD_CUSTOM_GET:
             raise IOError(f"unexpected response for value {value_id}: {resp!r}")
-        return list(resp[3:3 + length])
+        offset = 3 if self._v3 else 2
+        return list(resp[offset:offset + length])
 
     # -- high level -------------------------------------------------
 

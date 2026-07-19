@@ -20,6 +20,7 @@ from . import via
 
 STATE_DIR = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")),
                          "kbd-signal")
+CONFIG_FILE_NAME = "config.json"  # {"restore": "baseline" | "off"}
 STATE_FILE = os.path.join(STATE_DIR, "state.json")
 # Marker for cheap hook-side guards (`if exist active.flag ...`) so hot hooks
 # like PostToolUse can skip launching Python entirely when idle.
@@ -46,6 +47,14 @@ def log(msg):
             f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {msg}\n")
     except OSError:
         pass
+
+
+def load_config():
+    try:
+        with open(os.path.join(STATE_DIR, CONFIG_FILE_NAME), encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
 
 
 def load_state():
@@ -112,9 +121,19 @@ def restore(after=None, generation=None):
     if generation is not None and generation != state["generation"]:
         return True  # superseded by a newer signal
     baseline = state.get("baseline")
+    mode = load_config().get("restore", "baseline")
     try:
         with via.Keyboard() as kb:
-            if baseline:
+            if mode == "off":
+                # Go dark first (avoids a flash of the baseline effect), then
+                # put the stored effect/color back so a manual Fn wake-up
+                # shows the user's own settings, not our last signal.
+                kb.set_value(via.VALUE_BRIGHTNESS, 0)
+                if baseline:
+                    kb.set_value(via.VALUE_EFFECT, baseline["effect"])
+                    kb.set_value(via.VALUE_COLOR, *baseline["color"])
+                    kb.set_value(via.VALUE_SPEED, baseline["speed"])
+            elif baseline:
                 kb.apply_snapshot(baseline)
     except (via.DeviceNotFound, OSError) as e:
         # Keyboard gone: RAM-only changes vanish on power cycle anyway.

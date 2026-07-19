@@ -9,6 +9,11 @@ description = "Claude Code / Codex status notifications via Keychron K8 Pro back
 requires-python = ">=3.11"
 dependencies = ["hidapi>=0.14"]
 license = { text = "MIT" }
+readme = "README.md"
+authors = [{ name = "sora (Sora-bluesky)" }]
+
+[project.urls]
+Repository = "https://github.com/Sora-bluesky/keychron-signal"
 
 [project.scripts]
 kbd-signal = "kbd_signal.cli:main"

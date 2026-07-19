@@ -76,6 +76,10 @@ For hot hooks (`PostToolUse`, `SessionEnd`) you can guard with the active-flag m
 - Effect indices are identical across firmware generations (`info.json` animation list matches): None=0, **Solid Color=1, Breathing=2**, … Solid Splash=22
 - Device detection: VID `0x3434` + usage page `0xFF60` / usage `0x61` (PIDs differ per layout variant)
 
+## Roadmap
+
+- **v0.2.0 (planned): generic VIA keyboard support.** The protocol layer is not K8 Pro specific — v2 value ids are fixed by the VIA spec and Solid Color is always effect 1 in QMK. Making the vendor/product id, the v3 custom-channel number, and the effect indices configurable (`config.json`) should cover most VIA-compatible RGB keyboards. `kbd-signal raw-effect <n>` already exists for probing effect indices on a new board.
+
 ## License
 
 MIT

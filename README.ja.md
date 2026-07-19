@@ -85,6 +85,10 @@ notify = ["py", "-3.13", "C:\\path\\to\\codex-notify-wrapper.py"]
 - VID `0x3434`。PID は配列で異なるため VID + usage page 0xFF60 で検出
 - 実測: BT モード+ケーブル接続では USB 列挙はされる(`KEEP_USB_CONNECTION_IN_BLUETOOTH_MODE`)が 0xFF60 raw HID は出ない。背面スイッチ Cable が必須
 
+## ロードマップ
+
+- **v0.2.0(対応予定): VIA 対応キーボードへの汎用化。** プロトコル層は K8 Pro 固有ではない(v2 の value id は VIA 仕様で固定、Solid Color=1 は QMK 全機種共通)。VID/PID・v3 チャネル番号・エフェクト番号の3点を `config.json` に外出しすれば、大半の VIA 対応 RGB キーボードで動く見込み。新しい機種のエフェクト番号調査用に `kbd-signal raw-effect <n>` を用意済み
+
 ## License
 
 MIT

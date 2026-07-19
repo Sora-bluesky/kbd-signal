@@ -99,7 +99,13 @@ def main(argv=None):
     sp.set_defaults(fn=cmd_hook)
 
     args = p.parse_args(argv)
-    return args.fn(args)
+    try:
+        return args.fn(args)
+    except via.DeviceNotFound as e:
+        # Diagnostic commands report the missing keyboard cleanly with exit 1.
+        # Hook paths never raise (cmd_hook catches everything itself).
+        print(f"kbd-signal: {e}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

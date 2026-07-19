@@ -13,7 +13,7 @@ readme = "README.md"
 authors = [{ name = "sora (Sora-bluesky)" }]
 
 [project.urls]
-Repository = "https://github.com/Sora-bluesky/keychron-signal"
+Repository = "https://github.com/Sora-bluesky/kbd-signal"
 
 [project.scripts]
 kbd-signal = "kbd_signal.cli:main"

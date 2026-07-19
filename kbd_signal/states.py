@@ -10,7 +10,9 @@ restore, so chained notifications (waiting -> done) still restore the
 user's original lighting.
 """
 
+import contextlib
 import json
+import msvcrt
 import os
 import subprocess
 import sys
@@ -47,6 +49,33 @@ def log(msg):
             f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {msg}\n")
     except OSError:
         pass
+
+
+@contextlib.contextmanager
+def _state_lock():
+    """Interprocess lock serializing load/mutate/save of the state file.
+    Concurrent hook processes (e.g. two sessions' PermissionRequest at once)
+    would otherwise race read-modify-write and drop a waiting owner."""
+    os.makedirs(STATE_DIR, exist_ok=True)
+    f = open(os.path.join(STATE_DIR, "state.lock"), "a+b")
+    try:
+        f.seek(0)
+        while True:
+            try:
+                msvcrt.locking(f.fileno(), msvcrt.LK_LOCK, 1)  # waits ~10 s
+                break
+            except OSError:
+                continue
+        try:
+            yield
+        finally:
+            try:
+                f.seek(0)
+                msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
+            except OSError:
+                pass
+    finally:
+        f.close()
 
 
 def load_config():
@@ -124,7 +153,7 @@ def set_state(name, session=None):
     except (via.DeviceNotFound, OSError) as e:
         log(f"set {name}: device unavailable ({e})")
         return False
-    with kb:
+    with kb, _state_lock():
         state = load_state()
         if state["active"] == "error" and name != "error":
             log(f"set {name}: blocked by sticky error")
@@ -169,6 +198,11 @@ def restore(after=None, generation=None, session=None):
     is left untouched (same guard as set_state)."""
     if after:
         time.sleep(after)
+    with _state_lock():
+        return _restore_locked(generation, session)
+
+
+def _restore_locked(generation, session):
     state = load_state()
     if state["active"] is None:
         return True

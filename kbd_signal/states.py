@@ -85,29 +85,40 @@ def is_active():
     return load_state()["active"] is not None
 
 
-def _blocked_by_priority(state, name, session):
-    """Multi-session guard: a waiting signal belongs to the session that
-    raised it. Another session's turn completion must not clear it, or the
-    user loses the "something is still waiting for approval" cue."""
-    active = state["active"]
-    if active is None:
-        return False
-    if active == "error" and name != "error":
-        return True  # error is manual and sticky until restore
-    if active == "waiting" and name == "done":
-        owner = state.get("owner")
-        return owner is not None and session is not None and owner != session
-    return False
+def _owners(state):
+    """Sessions with a pending waiting signal (refcount). Migrates the
+    v0.1.1 single-"owner" field transparently."""
+    if "owners" in state:
+        return list(state["owners"] or [])
+    owner = state.get("owner")
+    return [owner] if owner else []
+
+
+def _release_from_waiting(state, name, session):
+    """Multi-session guard for entering `name` while waiting is active.
+    Every session with a pending approval keeps the orange signal alive:
+    a session's done/turn-end only removes itself from the owner list, and
+    the signal survives until the list is empty. Returns:
+      "blocked"  -> keep waiting, do nothing else
+      "held"     -> caller removed from owners but others remain (save state)
+      "clear"    -> waiting fully released, proceed with `name`
+    """
+    if state["active"] != "waiting" or name != "done":
+        return "clear"
+    owners = _owners(state)
+    if not owners or session is None:
+        return "clear"  # anonymous/manual override keeps old behavior
+    if session not in owners:
+        return "blocked"
+    owners.remove(session)
+    state["owners"] = owners
+    state.pop("owner", None)
+    return "held" if owners else "clear"
 
 
 def set_state(name, session=None):
     """Enter a signal state. Silently no-ops if the keyboard is absent."""
     pattern = PATTERNS[name]
-    pre = load_state()
-    if _blocked_by_priority(pre, name, session):
-        log(f"set {name}: blocked by active {pre['active']} "
-            f"(owner {pre.get('owner')}, session {session})")
-        return True
     try:
         kb = via.Keyboard()
     except (via.DeviceNotFound, OSError) as e:
@@ -115,8 +126,17 @@ def set_state(name, session=None):
         return False
     with kb:
         state = load_state()
-        if _blocked_by_priority(state, name, session):  # re-check after open
-            log(f"set {name}: blocked by active {state['active']}")
+        if state["active"] == "error" and name != "error":
+            log(f"set {name}: blocked by sticky error")
+            return True  # error is manual and sticky until restore
+        verdict = _release_from_waiting(state, name, session)
+        if verdict == "blocked":
+            log(f"set {name}: blocked, waiting owned by {_owners(state)}")
+            return True
+        if verdict == "held":
+            state["generation"] += 1
+            save_state(state)
+            log(f"set {name}: held, still waiting for {state['owners']}")
             return True
         if state["active"] is None:
             try:
@@ -124,12 +144,19 @@ def set_state(name, session=None):
             except IOError as e:
                 log(f"set {name}: snapshot failed ({e})")
                 return False
+        if name == "waiting":
+            owners = _owners(state)
+            if session is not None and session not in owners:
+                owners.append(session)
+            state["owners"] = owners
+        else:
+            state["owners"] = []
+        state.pop("owner", None)
         state["active"] = name
-        state["owner"] = session if name == "waiting" else None
         state["generation"] += 1
         save_state(state)
         kb.apply(**pattern)
-    log(f"set {name} (gen {state['generation']})")
+    log(f"set {name} (gen {state['generation']}, owners {state['owners']})")
     if name == "done":
         _spawn_delayed_restore(DONE_RESTORE_AFTER, state["generation"])
     return True
@@ -147,10 +174,19 @@ def restore(after=None, generation=None, session=None):
         return True
     if generation is not None and generation != state["generation"]:
         return True  # superseded by a newer signal
-    if (state["active"] == "waiting" and session is not None
-            and state.get("owner") is not None and state["owner"] != session):
-        log(f"restore: skipped, waiting owned by {state['owner']}")
-        return True
+    if state["active"] == "waiting" and session is not None:
+        owners = _owners(state)
+        if owners:
+            if session not in owners:
+                log(f"restore: skipped, waiting owned by {owners}")
+                return True
+            owners.remove(session)
+            if owners:  # other sessions still awaiting approval
+                state["owners"] = owners
+                state.pop("owner", None)
+                save_state(state)
+                log(f"restore: released {session}, still waiting for {owners}")
+                return True
     baseline = state.get("baseline")
     mode = load_config().get("restore", "baseline")
     try:

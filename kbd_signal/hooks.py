@@ -15,10 +15,12 @@ def handle_claude(stdin=None):
     all registered events, dispatched by hook_event_name."""
     try:
         payload = json.load(stdin or sys.stdin)
-    except ValueError:
+    except ValueError as e:
+        states.log(f"hook claude: stdin parse failed ({e})")
         return
     event = payload.get("hook_event_name", "")
     session = payload.get("session_id")
+    states.log(f"hook claude: event={event or '?'} session={session}")
 
     if event == "PermissionRequest":
         states.set_state("waiting", session=session)

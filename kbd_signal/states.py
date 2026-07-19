@@ -31,13 +31,16 @@ LOG_FILE = os.path.join(STATE_DIR, "kbd-signal.log")
 
 DONE_RESTORE_AFTER = 5  # seconds
 
-# QMK hue wheel: red=0, orange=21, green=85
+# Effect indices (mirror via.EFFECT_*; literal here so importing this module
+# never pulls in the hidapi DLL). QMK hue wheel: red=0, orange=21, green=85
+_EFFECT_SOLID_COLOR = 1
+_EFFECT_BREATHING = 2
 PATTERNS = {
-    "waiting": dict(effect=via.EFFECT_BREATHING, hue=21, sat=255,
+    "waiting": dict(effect=_EFFECT_BREATHING, hue=21, sat=255,
                     speed=170, brightness=255),
-    "done": dict(effect=via.EFFECT_SOLID_COLOR, hue=85, sat=255,
+    "done": dict(effect=_EFFECT_SOLID_COLOR, hue=85, sat=255,
                  brightness=255),
-    "error": dict(effect=via.EFFECT_BREATHING, hue=0, sat=255,
+    "error": dict(effect=_EFFECT_BREATHING, hue=0, sat=255,
                   speed=255, brightness=255),
 }
 
@@ -51,21 +54,32 @@ def log(msg):
         pass
 
 
+class LockTimeout(Exception):
+    pass
+
+
 @contextlib.contextmanager
-def _state_lock():
+def _state_lock(timeout=3.0):
     """Interprocess lock serializing load/mutate/save of the state file.
     Concurrent hook processes (e.g. two sessions' PermissionRequest at once)
-    would otherwise race read-modify-write and drop a waiting owner."""
+    would otherwise race read-modify-write and drop a waiting owner.
+
+    Bounded: gives up with LockTimeout after `timeout` seconds so a stuck
+    holder can never pin a hook past Claude's 5-second hook timeout —
+    dropping one signal beats hanging the agent."""
     os.makedirs(STATE_DIR, exist_ok=True)
     f = open(os.path.join(STATE_DIR, "state.lock"), "a+b")
     try:
         f.seek(0)
+        deadline = time.monotonic() + timeout
         while True:
             try:
-                msvcrt.locking(f.fileno(), msvcrt.LK_LOCK, 1)  # waits ~10 s
+                msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
                 break
             except OSError:
-                continue
+                if time.monotonic() >= deadline:
+                    raise LockTimeout(f"state lock not acquired in {timeout}s")
+                time.sleep(0.05)
         try:
             yield
         finally:
@@ -153,6 +167,14 @@ def set_state(name, session=None):
     except (via.DeviceNotFound, OSError) as e:
         log(f"set {name}: device unavailable ({e})")
         return False
+    try:
+        return _set_state_locked(kb, name, session, pattern)
+    except LockTimeout as e:
+        log(f"set {name}: {e}, skipped")
+        return False
+
+
+def _set_state_locked(kb, name, session, pattern):
     with kb, _state_lock():
         state = load_state()
         if state["active"] == "error" and name != "error":
@@ -198,8 +220,12 @@ def restore(after=None, generation=None, session=None):
     is left untouched (same guard as set_state)."""
     if after:
         time.sleep(after)
-    with _state_lock():
-        return _restore_locked(generation, session)
+    try:
+        with _state_lock():
+            return _restore_locked(generation, session)
+    except LockTimeout as e:
+        log(f"restore: {e}, skipped")
+        return False
 
 
 def _restore_locked(generation, session):

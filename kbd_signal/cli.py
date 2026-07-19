@@ -101,8 +101,10 @@ def main(argv=None):
     args = p.parse_args(argv)
     try:
         return args.fn(args)
-    except via.DeviceNotFound as e:
-        # Diagnostic commands report the missing keyboard cleanly with exit 1.
+    except (via.DeviceNotFound, OSError) as e:
+        # Diagnostic commands report a missing or unopenable keyboard cleanly
+        # with exit 1 (OSError covers open_path/read/write failures, e.g. the
+        # device disappearing between enumeration and open).
         # Hook paths never raise (cmd_hook catches everything itself).
         print(f"kbd-signal: {e}", file=sys.stderr)
         return 1

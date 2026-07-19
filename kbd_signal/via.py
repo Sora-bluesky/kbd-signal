@@ -72,11 +72,34 @@ class Keyboard:
         self._v3 = self.protocol >= 11
 
     def _probe_protocol(self):
-        self._write(CMD_GET_PROTOCOL_VERSION)
-        resp = self._dev.read(64, 500)
-        if not resp or resp[0] != CMD_GET_PROTOCOL_VERSION:
-            raise IOError(f"protocol probe failed: {resp!r}")
+        resp = self._request(CMD_GET_PROTOCOL_VERSION, match=1)
+        if resp is None:
+            raise IOError("protocol probe failed: no matching response")
         return (resp[1] << 8) | resp[2]
+
+    def _drain(self):
+        """Discard pending input reports. Windows delivers HID input reports
+        to every open handle of the collection, so echoes of commands sent by
+        a concurrently running kbd-signal process (hooks) land here too.
+        Note: read(size, 0) means *blocking* in cython-hidapi, so use a 1 ms
+        timeout for the non-blocking sweep."""
+        while self._dev.read(64, 1):
+            pass
+
+    def _request(self, *payload, tries=6, match=None):
+        """Write a command and read until a response echoing the first
+        `match` payload bytes arrives, discarding unrelated echoes from
+        concurrent processes. Returns None on timeout."""
+        if match is None:
+            match = len(payload)
+        self._drain()
+        self._write(*payload)
+        want = list(payload[:match])
+        for _ in range(tries):
+            resp = self._dev.read(64, 250)
+            if resp and list(resp[:match]) == want:
+                return resp
+        return None
 
     def close(self):
         self._dev.close()
@@ -96,20 +119,22 @@ class Keyboard:
 
     def set_value(self, value_id, *data):
         v2_id, v3_id = _VALUE_IDS[value_id]
+        # _request also consumes the firmware's echo of this SET, keeping the
+        # input queue clean for later reads. A missed echo is not fatal.
         if self._v3:
-            self._write(CMD_CUSTOM_SET, CHANNEL_RGB_MATRIX, v3_id, *data)
+            self._request(CMD_CUSTOM_SET, CHANNEL_RGB_MATRIX, v3_id, *data,
+                          tries=2, match=3)
         else:
-            self._write(CMD_CUSTOM_SET, v2_id, *data)
+            self._request(CMD_CUSTOM_SET, v2_id, *data, tries=2, match=2)
 
     def get_value(self, value_id, length=1):
         v2_id, v3_id = _VALUE_IDS[value_id]
         if self._v3:
-            self._write(CMD_CUSTOM_GET, CHANNEL_RGB_MATRIX, v3_id)
+            resp = self._request(CMD_CUSTOM_GET, CHANNEL_RGB_MATRIX, v3_id)
         else:
-            self._write(CMD_CUSTOM_GET, v2_id)
-        resp = self._dev.read(64, 500)
-        if not resp or resp[0] != CMD_CUSTOM_GET:
-            raise IOError(f"unexpected response for value {value_id}: {resp!r}")
+            resp = self._request(CMD_CUSTOM_GET, v2_id)
+        if resp is None:
+            raise IOError(f"no response for value {value_id}")
         offset = 3 if self._v3 else 2
         return list(resp[offset:offset + length])
 

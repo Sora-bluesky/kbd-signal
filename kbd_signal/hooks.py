@@ -18,19 +18,20 @@ def handle_claude(stdin=None):
     except ValueError:
         return
     event = payload.get("hook_event_name", "")
+    session = payload.get("session_id")
 
     if event == "PermissionRequest":
-        states.set_state("waiting")
+        states.set_state("waiting", session=session)
     elif event == "PostToolUse":
         # Fast path: only touch HID when a "waiting" signal needs clearing
         # (fires on every tool call, so stay cheap by default).
         if states.load_state()["active"] == "waiting":
-            states.restore()
+            states.restore(session=session)
     elif event == "Stop":
-        states.set_state("done")
+        states.set_state("done", session=session)
     elif event == "SessionEnd":
         if states.is_active():
-            states.restore()
+            states.restore(session=session)
 
 
 def handle_codex(argv):

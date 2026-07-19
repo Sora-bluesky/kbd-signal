@@ -2,7 +2,7 @@
 
 [English](README.md) | [日本語](README.ja.md)
 
-Turn a **Keychron K8 Pro's RGB backlight into a status lamp** for AI coding agents on Windows. When Claude Code stops and waits for your approval, your keyboard starts breathing orange — no need to watch the screen.
+Turn a **VIA-compatible RGB keyboard's backlight into a status lamp** for AI coding agents on Windows (defaults target the Keychron K8 Pro). When Claude Code stops and waits for your approval, your keyboard starts breathing orange — no need to watch the screen.
 
 Works on **stock firmware** (no flashing) by speaking the VIA raw HID protocol directly.
 
@@ -72,9 +72,31 @@ Register the same command for `PermissionRequest`, `PostToolUse`, `Stop`, and `S
 - Effect indices are identical across firmware generations (`info.json` animation list matches): None=0, **Solid Color=1, Breathing=2**, … Solid Splash=22
 - Device detection: VID `0x3434` + usage page `0xFF60` / usage `0x61` (PIDs differ per layout variant)
 
-## Roadmap
+## Other keyboards (since v0.2.0)
 
-- **v0.2.0 (planned): generic VIA keyboard support.** The protocol layer is not K8 Pro specific — v2 value ids are fixed by the VIA spec and Solid Color is always effect 1 in QMK. Making the vendor/product id, the v3 custom-channel number, and the effect indices configurable (`config.json`) should cover most VIA-compatible RGB keyboards. `kbd-signal raw-effect <n>` already exists for probing effect indices on a new board.
+The protocol layer is not K8 Pro specific: VIA v2 value ids are fixed by the VIA spec and Solid Color is always effect 1 in QMK. Point kbd-signal at another VIA-compatible RGB keyboard via `config.json`:
+
+```json
+{
+  "restore": "off",
+  "device": {
+    "vendor_id": "0x3434",
+    "product_id": null,
+    "product_match": "K8",
+    "v3_channel": 3,
+    "effects": {"solid": 1, "breathing": 2}
+  }
+}
+```
+
+Workflow for a new board:
+
+1. `kbd-signal detect --all` — list every raw-HID (0xFF60) device and copy its VID/PID into `config.json`
+2. `kbd-signal raw-effect <n>` — step through effect indices until you find solid/breathing, then set `effects`
+3. On a VIA v3 board, set `v3_channel` to the keyboard's `id_qmk_rgb_matrix` channel from its VIA definition (v2 boards ignore it)
+4. `kbd-signal test`
+
+Boards without RGB (single-color backlight) are out of scope — states are color-coded.
 
 ## License
 

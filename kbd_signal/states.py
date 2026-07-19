@@ -85,9 +85,29 @@ def is_active():
     return load_state()["active"] is not None
 
 
-def set_state(name):
+def _blocked_by_priority(state, name, session):
+    """Multi-session guard: a waiting signal belongs to the session that
+    raised it. Another session's turn completion must not clear it, or the
+    user loses the "something is still waiting for approval" cue."""
+    active = state["active"]
+    if active is None:
+        return False
+    if active == "error" and name != "error":
+        return True  # error is manual and sticky until restore
+    if active == "waiting" and name == "done":
+        owner = state.get("owner")
+        return owner is not None and session is not None and owner != session
+    return False
+
+
+def set_state(name, session=None):
     """Enter a signal state. Silently no-ops if the keyboard is absent."""
     pattern = PATTERNS[name]
+    pre = load_state()
+    if _blocked_by_priority(pre, name, session):
+        log(f"set {name}: blocked by active {pre['active']} "
+            f"(owner {pre.get('owner')}, session {session})")
+        return True
     try:
         kb = via.Keyboard()
     except (via.DeviceNotFound, OSError) as e:
@@ -95,6 +115,9 @@ def set_state(name):
         return False
     with kb:
         state = load_state()
+        if _blocked_by_priority(state, name, session):  # re-check after open
+            log(f"set {name}: blocked by active {state['active']}")
+            return True
         if state["active"] is None:
             try:
                 state["baseline"] = kb.snapshot()
@@ -102,6 +125,7 @@ def set_state(name):
                 log(f"set {name}: snapshot failed ({e})")
                 return False
         state["active"] = name
+        state["owner"] = session if name == "waiting" else None
         state["generation"] += 1
         save_state(state)
         kb.apply(**pattern)
@@ -111,8 +135,11 @@ def set_state(name):
     return True
 
 
-def restore(after=None, generation=None):
-    """Restore the user's baseline lighting and clear the active state."""
+def restore(after=None, generation=None, session=None):
+    """Restore the user's baseline lighting and clear the active state.
+
+    When `session` is given, a waiting signal owned by a different session
+    is left untouched (same guard as set_state)."""
     if after:
         time.sleep(after)
     state = load_state()
@@ -120,6 +147,10 @@ def restore(after=None, generation=None):
         return True
     if generation is not None and generation != state["generation"]:
         return True  # superseded by a newer signal
+    if (state["active"] == "waiting" and session is not None
+            and state.get("owner") is not None and state["owner"] != session):
+        log(f"restore: skipped, waiting owned by {state['owner']}")
+        return True
     baseline = state.get("baseline")
     mode = load_config().get("restore", "baseline")
     try:

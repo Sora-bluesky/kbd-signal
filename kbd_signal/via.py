@@ -9,7 +9,8 @@ deliberately never sent, so a power cycle always restores the user's
 persisted settings and the EEPROM is never worn.
 """
 
-import hid
+# `import hid` is deferred into the functions below: importing this module
+# must stay cheap for the hot no-op hook path (no hidapi DLL load).
 
 VENDOR_ID = 0x3434  # Keychron
 USAGE_PAGE = 0xFF60  # QMK raw HID
@@ -50,6 +51,7 @@ class DeviceNotFound(Exception):
 
 
 def find_device_path():
+    import hid
     candidates = [
         d for d in hid.enumerate(VENDOR_ID)
         if d.get("usage_page") == USAGE_PAGE and d.get("usage") == USAGE
@@ -66,6 +68,7 @@ def find_device_path():
 
 class Keyboard:
     def __init__(self):
+        import hid
         self._dev = hid.device()
         self._dev.open_path(find_device_path())
         self.protocol = self._probe_protocol()

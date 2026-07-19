@@ -59,8 +59,10 @@ kbd-signal hook codex <json>     # Codex notify 用
 `PermissionRequest` / `PostToolUse` / `Stop` / `SessionEnd` の各 hook に同一コマンドを登録(イベント名で内部振分):
 
 ```json
-{"type": "command", "command": "<Scripts>\\kbd-signal.exe hook claude", "timeout": 5}
+{"type": "command", "command": "C:/Users/<you>/AppData/Local/Programs/Python/Python313/Scripts/kbd-signal.exe hook claude", "timeout": 5}
 ```
+
+**パスは必ずフォワードスラッシュで書くこと。** フックコマンドは POSIX シェル経由で実行されることがあり、バックスラッシュはエスケープとして消えて**無音で失敗**する(登録されているのに一度も光らない、が起きる)。アイドル時のエントリは軽量(hidapi DLL は遅延ロード)なので、PostToolUse のような高頻度フックも同じコマンドでよい。
 
 ### Codex(v1 では未連携)
 

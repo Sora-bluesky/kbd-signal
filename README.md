@@ -58,14 +58,10 @@ The Fn backlight on/off flag is not readable over VIA, which is why `"off"` exis
 Register the same command for `PermissionRequest`, `PostToolUse`, `Stop`, and `SessionEnd` in your user-scope `settings.json` (events are dispatched internally by `hook_event_name`):
 
 ```json
-{"type": "command", "command": "<Scripts>\\kbd-signal.exe hook claude", "timeout": 5}
+{"type": "command", "command": "C:/Users/<you>/AppData/Local/Programs/Python/Python313/Scripts/kbd-signal.exe hook claude", "timeout": 5}
 ```
 
-For hot hooks (`PostToolUse`, `SessionEnd`) you can guard with the active-flag marker so Python is not even launched while idle:
-
-```json
-{"type": "command", "command": "cmd /c if exist %LOCALAPPDATA%\\kbd-signal\\active.flag <Scripts>\\kbd-signal.exe hook claude", "timeout": 5}
-```
+**Use forward slashes in the command path.** Hook commands may be executed through a POSIX shell where backslashes are escape characters — a backslashed path fails silently and the hook simply never signals. The entry point is cheap when idle (the hidapi DLL is imported lazily), so the same command is fine for hot hooks like `PostToolUse`.
 
 ## Protocol notes (verified on hardware)
 

@@ -34,6 +34,7 @@ jobs:
           $out = kbd-signal detect 2>&1
           if ($LASTEXITCODE -ne 1) { throw "detect should exit 1 on CI (no keyboard), got $LASTEXITCODE" }
           if ("$out" -match "Traceback") { throw "detect must not leak a traceback" }
+          exit 0  # the step must not inherit detect's expected exit 1
 
   install-from-pypi:
     # Verifies the real end-user path against the latest published release

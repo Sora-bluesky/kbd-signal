@@ -27,9 +27,15 @@ Before signaling, the current lighting (effect / speed / brightness / color) is 
 
 ## Install
 
+Recommended: [pipx](https://pipx.pypa.io/) — installs into an isolated environment and puts `kbd-signal` on PATH, which is exactly what the hook commands need:
+
 ```powershell
-py -3.13 -m pip install .
+py -m pip install --user pipx
+py -m pipx ensurepath   # then open a new terminal
+pipx install git+https://github.com/Sora-bluesky/kbd-signal
 ```
+
+Plain pip also works (`py -m pip install .`); in that case invoke the hooks with the **same interpreter** you installed into: `py -m kbd_signal hook claude`.
 
 ## Usage
 
@@ -59,10 +65,12 @@ The Fn backlight on/off flag is not readable over VIA, which is why `"off"` exis
 Register the same command for `PermissionRequest`, `PostToolUse`, `Stop`, and `SessionEnd` in your user-scope `settings.json` (events are dispatched internally by `hook_event_name`):
 
 ```json
-{"type": "command", "command": "py -3.13 -m kbd_signal hook claude", "timeout": 5}
+{"type": "command", "command": "kbd-signal hook claude", "timeout": 5}
 ```
 
-**Do not put a filesystem path in the program position.** Hook commands may run through either `cmd` or a POSIX shell: backslashed paths get eaten as escapes by the POSIX shell, and forward-slashed program paths fail under `cmd` with "Access is denied" — both silently, so the hook simply never signals (measured on Windows 11). A PATH-resolved launcher (`py -3.13 -m kbd_signal ...`) works under both. The entry point is cheap when idle (the hidapi DLL is imported lazily), so the same command is fine for hot hooks like `PostToolUse`.
+(pipx install — the `kbd-signal` shim is on PATH. With a plain pip install, use `py -m kbd_signal hook claude` instead, matching the interpreter you installed into.)
+
+**Do not put a filesystem path in the program position.** Hook commands may run through either `cmd` or a POSIX shell: backslashed paths get eaten as escapes by the POSIX shell, and forward-slashed program paths fail under `cmd` with "Access is denied" — both silently, so the hook simply never signals (measured on Windows 11). PATH-resolved names (`kbd-signal`, `py -m kbd_signal`) work under both. The entry point is cheap when idle (the hidapi DLL is imported lazily), so the same command is fine for hot hooks like `PostToolUse`.
 
 ## Codex integration (since v0.3.0)
 
@@ -78,7 +86,7 @@ Every event uses the same command:
 ```json
 {
   "type": "command",
-  "command": "py -3.13 -m kbd_signal hook codex",
+  "command": "kbd-signal hook codex",
   "timeout": 5
 }
 ```

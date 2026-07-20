@@ -5,12 +5,19 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "kbd-signal"
 version = "0.3.0"
-description = "Claude Code / Codex status notifications via Keychron K8 Pro backlight (VIA raw HID, stock firmware)"
+description = "Turn a VIA-compatible RGB keyboard's backlight into a status lamp for Claude Code / Codex (raw HID, stock firmware)"
 requires-python = ">=3.11"
 dependencies = ["hidapi>=0.14"]
 license = { text = "MIT" }
 readme = "README.md"
 authors = [{ name = "sora (Sora-bluesky)" }]
+keywords = ["keychron", "via", "qmk", "rgb", "claude-code", "codex", "hid"]
+classifiers = [
+    "Environment :: Console",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Topic :: System :: Hardware",
+]
 
 [project.urls]
 Repository = "https://github.com/Sora-bluesky/kbd-signal"

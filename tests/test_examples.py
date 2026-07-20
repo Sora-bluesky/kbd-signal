@@ -40,7 +40,7 @@ class ExampleConfigTests(unittest.TestCase):
             self.assertEqual(handler["type"], "command")
             self.assertEqual(
                 handler["command"],
-                "py -3.13 -m kbd_signal hook codex",
+                "kbd-signal hook codex",
             )
             self.assertEqual(handler["timeout"], 5)
 

@@ -32,7 +32,7 @@ Recommended: [pipx](https://pipx.pypa.io/) — installs into an isolated environ
 ```powershell
 py -m pip install --user pipx
 py -m pipx ensurepath   # then open a new terminal
-pipx install git+https://github.com/Sora-bluesky/kbd-signal
+pipx install kbd-signal
 ```
 
 Plain pip also works (`py -m pip install .`); in that case invoke the hooks with the **same interpreter** you installed into: `py -m kbd_signal hook claude`.

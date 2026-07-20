@@ -1,3 +1,3 @@
 """kbd-signal: Claude Code / Codex status -> Keychron K8 Pro backlight."""
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"

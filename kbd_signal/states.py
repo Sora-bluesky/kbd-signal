@@ -3,7 +3,8 @@
 State file (%LOCALAPPDATA%/kbd-signal/state.json):
   {"active": "waiting"|"done"|"error"|null,
    "generation": int,
-   "baseline": {...snapshot...}}
+   "baseline": {...snapshot...},
+   "owners": ["product:session:agent", ...]}
 
 The baseline is captured once when entering a signal state and kept until
 restore, so chained notifications (waiting -> done) still restore the
@@ -127,15 +128,34 @@ def is_active():
 
 
 def _owners(state):
-    """Sessions with a pending waiting signal (refcount). Migrates the
-    v0.1.1 single-"owner" field transparently."""
+    """Agents with a pending waiting signal (refcount).
+
+    Migrates the v0.1.1 single-"owner" field transparently. Raw v0.2.0
+    session ids are replaced lazily through ``owner_aliases`` when their next
+    lifecycle event arrives.
+    """
     if "owners" in state:
         return list(state["owners"] or [])
     owner = state.get("owner")
     return [owner] if owner else []
 
 
-def _release_from_waiting(state, name, session):
+def _owner_matches(owner, session=None, owner_prefix=None, owner_aliases=()):
+    if session is not None and owner == session:
+        return True
+    if owner in owner_aliases:
+        return True
+    return (owner_prefix is not None and isinstance(owner, str)
+            and owner.startswith(owner_prefix))
+
+
+def _has_owner_target(session=None, owner_prefix=None, owner_aliases=()):
+    return (session is not None or owner_prefix is not None
+            or bool(owner_aliases))
+
+
+def _release_from_waiting(state, name, session, owner_prefix=None,
+                          owner_aliases=()):
     """Multi-session guard for entering `name` while waiting is active.
     Every session with a pending approval keeps the orange signal alive:
     a session's done/turn-end only removes itself from the owner list, and
@@ -147,17 +167,21 @@ def _release_from_waiting(state, name, session):
     if state["active"] != "waiting" or name != "done":
         return "clear"
     owners = _owners(state)
-    if not owners or session is None:
+    if not owners or not _has_owner_target(
+            session, owner_prefix, owner_aliases):
         return "clear"  # anonymous/manual override keeps old behavior
-    if session not in owners:
+    remaining = [
+        owner for owner in owners
+        if not _owner_matches(owner, session, owner_prefix, owner_aliases)
+    ]
+    if len(remaining) == len(owners):
         return "blocked"
-    owners.remove(session)
-    state["owners"] = owners
+    state["owners"] = remaining
     state.pop("owner", None)
-    return "held" if owners else "clear"
+    return "held" if remaining else "clear"
 
 
-def set_state(name, session=None):
+def set_state(name, session=None, owner_prefix=None, owner_aliases=()):
     """Enter a signal state. Silently no-ops if the keyboard is absent."""
     pattern = patterns()[name]
     try:
@@ -166,26 +190,31 @@ def set_state(name, session=None):
         log(f"set {name}: device unavailable ({e})")
         return False
     try:
-        return _set_state_locked(kb, name, session, pattern)
+        return _set_state_locked(
+            kb, name, session, pattern, owner_prefix, owner_aliases
+        )
     except LockTimeout as e:
         log(f"set {name}: {e}, skipped")
         return False
 
 
-def _set_state_locked(kb, name, session, pattern):
+def _set_state_locked(kb, name, session, pattern, owner_prefix=None,
+                      owner_aliases=()):
     with kb, _state_lock():
         state = load_state()
         if state["active"] == "error" and name != "error":
             log(f"set {name}: blocked by sticky error")
             return True  # error is manual and sticky until restore
-        verdict = _release_from_waiting(state, name, session)
+        verdict = _release_from_waiting(
+            state, name, session, owner_prefix, owner_aliases
+        )
         if verdict == "blocked":
-            log(f"set {name}: blocked, waiting owned by {_owners(state)}")
+            log(f"set {name}: blocked by {len(_owners(state))} pending owner(s)")
             return True
         if verdict == "held":
             state["generation"] += 1
             save_state(state)
-            log(f"set {name}: held, still waiting for {state['owners']}")
+            log(f"set {name}: held for {len(state['owners'])} pending owner(s)")
             return True
         if state["active"] is None:
             try:
@@ -194,7 +223,9 @@ def _set_state_locked(kb, name, session, pattern):
                 log(f"set {name}: snapshot failed ({e})")
                 return False
         if name == "waiting":
-            owners = _owners(state)
+            aliases = set(owner_aliases)
+            owners = [owner for owner in _owners(state)
+                      if owner not in aliases]
             if session is not None and session not in owners:
                 owners.append(session)
             state["owners"] = owners
@@ -205,7 +236,8 @@ def _set_state_locked(kb, name, session, pattern):
         state["generation"] += 1
         save_state(state)
         kb.apply(**pattern)
-    log(f"set {name} (gen {state['generation']}, owners {state['owners']})")
+    log(f"set {name} (gen {state['generation']}, "
+        f"owner_count {len(state['owners'])})")
     if name == "done":
         _spawn_delayed_restore(DONE_RESTORE_AFTER, state["generation"])
     return True
@@ -226,24 +258,49 @@ def restore(after=None, generation=None, session=None):
         return False
 
 
-def _restore_locked(generation, session):
+def release_waiting(session=None, owner_prefix=None, owner_aliases=()):
+    """Release only matching waiting owners without touching other states."""
+    try:
+        with _state_lock():
+            return _restore_locked(
+                None,
+                session,
+                owner_prefix=owner_prefix,
+                owner_aliases=owner_aliases,
+                waiting_only=True,
+            )
+    except LockTimeout as e:
+        log(f"release waiting: {e}, skipped")
+        return False
+
+
+def _restore_locked(generation, session, owner_prefix=None, owner_aliases=(),
+                    waiting_only=False):
     state = load_state()
     if state["active"] is None:
         return True
     if generation is not None and generation != state["generation"]:
         return True  # superseded by a newer signal
-    if state["active"] == "waiting" and session is not None:
+    if waiting_only and state["active"] != "waiting":
+        return True
+    if state["active"] == "waiting" and _has_owner_target(
+            session, owner_prefix, owner_aliases):
         owners = _owners(state)
         if owners:
-            if session not in owners:
-                log(f"restore: skipped, waiting owned by {owners}")
+            remaining = [
+                owner for owner in owners
+                if not _owner_matches(
+                    owner, session, owner_prefix, owner_aliases
+                )
+            ]
+            if len(remaining) == len(owners):
+                log(f"restore: skipped, {len(owners)} pending owner(s)")
                 return True
-            owners.remove(session)
-            if owners:  # other sessions still awaiting approval
-                state["owners"] = owners
+            if remaining:  # other sessions still awaiting approval
+                state["owners"] = remaining
                 state.pop("owner", None)
                 save_state(state)
-                log(f"restore: released {session}, still waiting for {owners}")
+                log(f"restore: released owner, {len(remaining)} still pending")
                 return True
     baseline = state.get("baseline")
     mode = load_config().get("restore", "baseline")

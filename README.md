@@ -2,7 +2,7 @@
 
 [English](README.md) | [日本語](README.ja.md)
 
-Turn a **VIA-compatible RGB keyboard's backlight into a status lamp** for AI coding agents on Windows (defaults target the Keychron K8 Pro). When Claude Code stops and waits for your approval, your keyboard starts breathing orange — no need to watch the screen.
+Turn a **VIA-compatible RGB keyboard's backlight into a status lamp** for AI coding agents on Windows (defaults target the Keychron K8 Pro). When Claude Code or Codex waits for your approval, your keyboard starts breathing orange — no need to watch the screen.
 
 Works on **stock firmware** (no flashing) by speaking the VIA raw HID protocol directly.
 
@@ -10,9 +10,9 @@ Works on **stock firmware** (no flashing) by speaking the VIA raw HID protocol d
 
 | State | Trigger | Effect |
 |-------|---------|--------|
-| `waiting` | Claude Code shows a permission dialog (`PermissionRequest` hook) | Orange breathing |
-| `done` | Turn finished (`Stop` hook) | Solid green for 5 s, then auto-restore |
-| `error` | Manual `kbd-signal set error` (v1) | Fast red breathing |
+| `waiting` | Claude Code / Codex shows a permission dialog (`PermissionRequest` hook) | Orange breathing |
+| `done` | Main turn finished (`Stop` hook) | Solid green for 5 s, then auto-restore |
+| `error` | Manual `kbd-signal set error` | Fast red breathing |
 
 Before signaling, the current lighting (effect / speed / brightness / color) is snapshotted and restored afterwards. **Nothing is ever written to EEPROM** (RAM-only changes), so a power cycle always returns the keyboard to your saved settings.
 
@@ -22,7 +22,8 @@ Before signaling, the current lighting (effect / speed / brightness / color) is 
 - Keychron K8 Pro connected via **USB cable with the rear switch set to "Cable"**. Raw HID is not available over Bluetooth — measured: in BT mode with the cable attached, the USB HID collections enumerate but the `0xFF60` raw interface does not
 - When the keyboard is absent (BT mode, unplugged), the hook-facing commands (`hook`, `set`, `restore`) silently no-op with exit 0 — hooks are never blocked. Diagnostic commands (`detect`, `test`, `raw-effect`) report the missing device and exit 1
 - Do not run the VIA app / Keychron Launcher at the same time (concurrent raw HID writes race)
-- Codex CLI is not integrated in v1: its single `notify` slot is already occupied by the Codex desktop app's own notifier (see README.ja.md for a manual wrapper recipe)
+- Codex requires a version with lifecycle hooks; run `codex features list` and confirm that `hooks` is enabled
+- Concurrent Claude Code / Codex sessions and subagents are tracked independently; orange remains active while any approval is pending
 
 ## Install
 
@@ -39,7 +40,7 @@ kbd-signal restore [--after N] [--gen G]
 kbd-signal test                  # play all patterns, then restore
 kbd-signal raw-effect <n>        # set a raw effect index (debug)
 kbd-signal hook claude           # entry point for Claude Code hooks (JSON on stdin)
-kbd-signal hook codex <json>     # entry point for Codex notify
+kbd-signal hook codex [<json>]   # Codex hooks (stdin) / legacy notify (argv)
 ```
 
 ### Restore mode (`%LOCALAPPDATA%\kbd-signal\config.json`)
@@ -62,6 +63,43 @@ Register the same command for `PermissionRequest`, `PostToolUse`, `Stop`, and `S
 ```
 
 **Do not put a filesystem path in the program position.** Hook commands may run through either `cmd` or a POSIX shell: backslashed paths get eaten as escapes by the POSIX shell, and forward-slashed program paths fail under `cmd` with "Access is denied" — both silently, so the hook simply never signals (measured on Windows 11). A PATH-resolved launcher (`py -3.13 -m kbd_signal ...`) works under both. The entry point is cheap when idle (the hidapi DLL is imported lazily), so the same command is fine for hot hooks like `PostToolUse`.
+
+## Codex integration (since v0.3.0)
+
+Use Codex lifecycle hooks. They are separate from the `notify` entry in `~/.codex/config.toml`, so **leave the existing `notify` command unchanged**.
+
+1. Run `codex features list` and confirm that `hooks` is enabled
+2. Merge the events from [examples/codex-hooks.json](examples/codex-hooks.json) into the user-level `~/.codex/hooks.json`; do not overwrite an existing file
+3. Start the Codex CLI and choose `Review hooks` from the startup `Hooks need review` prompt, or open `/hooks`. Verify the source, event, and command before trusting them. Trust is tied to the hook definition hash, so review it again after any change
+4. In a new session, trigger an approval and verify orange while waiting and restoration after approval
+
+Every event uses the same command:
+
+```json
+{
+  "type": "command",
+  "command": "py -3.13 -m kbd_signal hook codex",
+  "timeout": 5
+}
+```
+
+The configuration uses:
+
+- `PermissionRequest` to add a pending approval
+- `PostToolUse` to release only the agent that completed its tool
+- `Stop` to release the main session and signal completion only when no other session is waiting
+- `SubagentStop` to clean up a child without flashing green for the whole task
+- `SessionStart` / `UserPromptSubmit` to clean up stale entries for the same session after an interrupted run
+
+Codex does not expose `SessionEnd`. If Codex is force-closed while an approval is pending and that session is never resumed, orange can remain active; run `kbd-signal restore` to recover.
+
+The old `agent-turn-complete` notify payload remains supported for compatibility, but it cannot report approval waits and competes with the desktop app's notifier, so it is not recommended for new installations.
+
+### Concurrent sessions
+
+Owners are keyed by product, `session_id`, and `agent_id`. A main-session completion therefore cannot clear another Claude/Codex session or one of its subagents. Updates to `state.json` remain serialized by the existing interprocess lock.
+
+To roll back, remove only the entries whose command invokes `kbd_signal hook codex` from `~/.codex/hooks.json`, then restart Codex. The desktop app's `notify` configuration remains untouched.
 
 ## Protocol notes (verified on hardware)
 

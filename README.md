@@ -176,6 +176,12 @@ across the reset window. (The Keychron Q1 HE 8K is one board known to need it.)
 
 Boards without RGB (single-color backlight) are out of scope — states are color-coded.
 
+### Verified devices
+
+Presets confirmed on real hardware. Each page lists the board's VID/PID, protocol, effect indices, and quirks; copy the linked config's `device` block into your `config.json`.
+
+- **Keychron Q1 HE 8K** — [notes](docs/devices/keychron-q1-he-8k.md) · [`config.q1-he-8k.json`](examples/config.q1-he-8k.json)
+
 ## License
 
 MIT

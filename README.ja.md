@@ -169,6 +169,12 @@ Codexには`SessionEnd`がないため、承認待ちの最中にアプリを強
 
 一部のファームは、エフェクト変更の約 50〜150ms 後に color(赤)と brightness(全開)をリセットします。多くの機種では起きないため、これは機種ごとのオプトイン方式の workaround です。`done` が赤くフラッシュ/固着する機種でのみ `"reset_on_effect": true` を設定してください。有効化すると、リセット窓の間 LED を暗く保ったまま色を確定させます。(既知の該当機種の一例が Keychron Q1 HE 8K です。)
 
+### 対応確認済みデバイス
+
+実機で確認済みのプリセット。各ページに VID/PID・プロトコル・エフェクト番号・注意点を記載。リンク先 config の `device` ブロックを `config.json` にコピーして使う。
+
+- **Keychron Q1 HE 8K** — [詳細](docs/devices/keychron-q1-he-8k.ja.md) · [`config.q1-he-8k.json`](examples/config.q1-he-8k.json)
+
 ## License
 
 MIT

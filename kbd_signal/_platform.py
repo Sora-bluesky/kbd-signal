@@ -67,6 +67,9 @@ def state_dir():
         base = os.path.join(os.path.expanduser("~"), "Library",
                             "Application Support")
     else:  # linux and other POSIX
-        base = (os.environ.get("XDG_STATE_HOME")
-                or os.path.join(os.path.expanduser("~"), ".local", "state"))
+        # XDG spec: a relative $XDG_STATE_HOME is ignored (it would tie the
+        # state dir to the process CWD); fall back to the default in that case.
+        xdg = os.environ.get("XDG_STATE_HOME")
+        base = (xdg if xdg and os.path.isabs(xdg)
+                else os.path.join(os.path.expanduser("~"), ".local", "state"))
     return os.path.join(base, "kbd-signal")

@@ -18,7 +18,7 @@ Before signaling, the current lighting (effect / speed / brightness / color) is 
 
 ## Requirements & limitations
 
-- Windows, Python 3.11+ (`hidapi` is the only dependency)
+- Windows or macOS, Python 3.11+ (`hidapi` is the only dependency; its macOS wheel is self-contained via IOKit, so no Homebrew `hidapi` is needed)
 - Keychron K8 Pro connected via **USB cable with the rear switch set to "Cable"**. Raw HID is not available over Bluetooth — measured: in BT mode with the cable attached, the USB HID collections enumerate but the `0xFF60` raw interface does not
 - When the keyboard is absent (BT mode, unplugged), the hook-facing commands (`hook`, `set`, `restore`) silently no-op with exit 0 — hooks are never blocked. Diagnostic commands (`detect`, `test`, `raw-effect`) report the missing device and exit 1
 - Do not run the VIA app / Keychron Launcher at the same time (concurrent raw HID writes race)
@@ -29,11 +29,11 @@ Before signaling, the current lighting (effect / speed / brightness / color) is 
 
 Recommended: [pipx](https://pipx.pypa.io/) — installs into an isolated environment and puts `kbd-signal` on PATH, which is exactly what the hook commands need:
 
-```powershell
+```
 pipx install kbd-signal
 ```
 
-If you don't have pipx yet (one-time setup):
+**Windows** — if you don't have pipx yet (one-time setup):
 
 ```powershell
 py -m pip install --user pipx
@@ -41,6 +41,8 @@ py -m pipx ensurepath   # then open a new terminal
 ```
 
 Plain pip also works (`py -m pip install .`); in that case invoke the hooks with the **same interpreter** you installed into: `py -m kbd_signal hook claude`.
+
+**macOS** — install pipx with Homebrew if you don't have it (`brew install pipx && pipx ensurepath`), then `pipx install kbd-signal`. The `hidapi` wheel is self-contained (IOKit backend), so **no `brew install hidapi`** is required. Config, state, and log live in `~/Library/Application Support/kbd-signal/`.
 
 ## Usage
 
@@ -54,7 +56,9 @@ kbd-signal hook claude           # entry point for Claude Code hooks (JSON on st
 kbd-signal hook codex [<json>]   # Codex hooks (stdin) / legacy notify (argv)
 ```
 
-### Restore mode (`%LOCALAPPDATA%\kbd-signal\config.json`)
+### Restore mode (`config.json` in the state dir)
+
+The state dir is `%LOCALAPPDATA%\kbd-signal` on Windows and `~/Library/Application Support/kbd-signal` on macOS.
 
 ```json
 {"restore": "off"}
@@ -76,6 +80,8 @@ Register the same command for `PermissionRequest`, `PostToolUse`, `Stop`, and `S
 (pipx install — the `kbd-signal` shim is on PATH. With a plain pip install, use `py -m kbd_signal hook claude` instead, matching the interpreter you installed into.)
 
 **Do not put a filesystem path in the program position.** Hook commands may run through either `cmd` or a POSIX shell: backslashed paths get eaten as escapes by the POSIX shell, and forward-slashed program paths fail under `cmd` with "Access is denied" — both silently, so the hook simply never signals (measured on Windows 11). PATH-resolved names (`kbd-signal`, `py -m kbd_signal`) work under both. The entry point is cheap when idle (the hidapi DLL is imported lazily), so the same command is fine for hot hooks like `PostToolUse`.
+
+That `cmd`-vs-POSIX hazard is Windows-only. On macOS/Linux an absolute path in the program position is safe, so if `kbd-signal` is not on the PATH your hooks run under, use its absolute path — pipx installs the shim at `~/.local/bin/kbd-signal`.
 
 ## Codex integration (since v0.3.0)
 

@@ -232,7 +232,8 @@ def _set_state_locked(kb, name, session, pattern, owner_prefix=None,
         state["active"] = name
         state["generation"] += 1
         save_state(state)
-        kb.apply(**pattern)
+        if not kb.apply(**pattern):
+            log(f"set {name}: color not confirmed after retries")
     log(f"set {name} (gen {state['generation']}, "
         f"owner_count {len(state['owners'])})")
     if name == "done":
@@ -310,10 +311,13 @@ def _restore_locked(generation, session, owner_prefix=None, owner_aliases=(),
                 kb.set_value(via.VALUE_BRIGHTNESS, 0)
                 if baseline:
                     kb.set_value(via.VALUE_EFFECT, baseline["effect"])
-                    kb.set_value(via.VALUE_COLOR, *baseline["color"])
                     kb.set_value(via.VALUE_SPEED, baseline["speed"])
+                    # verified write; the effect change resets color first
+                    if not kb.set_color(*baseline["color"]):
+                        log("restore: color not confirmed after retries")
             elif baseline:
-                kb.apply_snapshot(baseline)
+                if not kb.apply_snapshot(baseline):
+                    log("restore: color not confirmed after retries")
     except (via.DeviceNotFound, OSError) as e:
         # Keyboard gone: RAM-only changes vanish on power cycle anyway.
         log(f"restore: device unavailable ({e})")

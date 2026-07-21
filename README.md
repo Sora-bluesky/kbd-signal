@@ -2,7 +2,7 @@
 
 [English](README.md) | [日本語](README.ja.md)
 
-Turn a **VIA-compatible RGB keyboard's backlight into a status lamp** for AI coding agents on Windows (defaults target the Keychron K8 Pro). When Claude Code or Codex waits for your approval, your keyboard starts breathing orange — no need to watch the screen.
+Turn a **VIA-compatible RGB keyboard's backlight into a status lamp** for AI coding agents on Windows and macOS (defaults target the Keychron K8 Pro). When Claude Code or Codex waits for your approval, your keyboard starts breathing orange — no need to watch the screen.
 
 Works on **stock firmware** (no flashing) by speaking the VIA raw HID protocol directly.
 
@@ -24,6 +24,18 @@ Before signaling, the current lighting (effect / speed / brightness / color) is 
 - Do not run the VIA app / Keychron Launcher at the same time (concurrent raw HID writes race)
 - Codex requires a version with lifecycle hooks; run `codex features list` and confirm that `hooks` is enabled
 - Concurrent Claude Code / Codex sessions and subagents are tracked independently; orange remains active while any approval is pending
+
+## Platform support
+
+| OS | Status | Hardware verification |
+|----|--------|-----------------------|
+| Windows | ✅ Supported | Keychron K8 Pro (default), real hardware |
+| macOS | ✅ Supported | Keychron Q1 HE 8K, real hardware¹ |
+| Linux | 🧪 Best-effort | CI only — no hardware verification |
+
+¹ The macOS raw-HID path (`0xFF60` enumerate / open / protocol-probe, plus a Claude Code hook `waiting → done → restore`) is verified on a **Q1 HE 8K**. The **default K8 Pro has not been round-tripped on macOS** — the protocol layer is shared with the (verified) Windows path so it should work, but it is unconfirmed; a report either way is welcome.
+
+Linux runs the same POSIX code path as macOS and is exercised in CI, but has no hardware verification. The PyPI classifiers list Windows and macOS only.
 
 ## Install
 

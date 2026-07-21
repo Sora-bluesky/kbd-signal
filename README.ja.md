@@ -74,6 +74,8 @@ kbd-signal hook codex [<json>]   # Codex hooks(stdin) / 旧 notify(argv) 用
 {"type": "command", "command": "kbd-signal hook claude", "timeout": 5}
 ```
 
+そのまま使える例: [examples/claude-hooks.json](examples/claude-hooks.json) の `hooks` オブジェクトが上記4イベントを網羅している。`settings.json` の `hooks` へマージする(既存エントリは上書きしない)。
+
 (pipx インストール時。素の pip の場合はインストール先インタプリタに合わせて `py -m kbd_signal hook claude` にする)
 
 **プログラム位置にファイルパスを書かないこと。** フックコマンドは cmd と POSIX シェルのどちらで実行されるか環境依存で、バックスラッシュパスは POSIX シェルにエスケープとして食われ、フォワードスラッシュパスは cmd に "Access is denied" で拒否される — どちらも**無音で失敗**する(Windows 11 実測)。PATH 解決名(`kbd-signal` / `py -m kbd_signal`)なら両方で動く。アイドル時のエントリは軽量(hidapi DLL は遅延ロード)なので、PostToolUse のような高頻度フックも同じコマンドでよい。

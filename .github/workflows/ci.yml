@@ -11,12 +11,19 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # ubuntu-latest is a cheap stand-in for macOS: both run the same POSIX
-        # code path (fcntl lock, ~/.local vs ~/Library paths), and no test
-        # touches native HID (the keyboard is mocked), so a GitHub-hosted
-        # macOS runner (~10x minutes) buys no extra coverage here.
+        # ubuntu-latest exercises the POSIX code path (fcntl lock, XDG state
+        # dir) cheaply across all Python versions. macos-latest is added as a
+        # single cell below (via include): it is the only runner that actually
+        # runs the sys.platform=="darwin" branch — the ~/Library state dir, the
+        # IOKit hidapi wheel import, and the start_new_session detach. No test
+        # touches native HID (the keyboard is mocked).
         os: [windows-latest, ubuntu-latest]
         python-version: ["3.11", "3.12", "3.13"]
+        include:
+          # One macOS cell only: a full 3-Python macOS matrix costs ~5x runner
+          # minutes for no extra coverage (the darwin branch is version-agnostic).
+          - os: macos-latest
+            python-version: "3.13"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

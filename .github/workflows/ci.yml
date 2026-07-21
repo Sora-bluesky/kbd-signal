@@ -7,16 +7,28 @@ on:
 
 jobs:
   test:
-    runs-on: windows-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
+        # ubuntu-latest is a cheap stand-in for macOS: both run the same POSIX
+        # code path (fcntl lock, ~/.local vs ~/Library paths), and no test
+        # touches native HID (the keyboard is mocked), so a GitHub-hosted
+        # macOS runner (~10x minutes) buys no extra coverage here.
+        os: [windows-latest, ubuntu-latest]
         python-version: ["3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+      - name: Install hidapi build/runtime deps (Linux)
+        if: runner.os == 'Linux'
+        # Covers both paths: runtime lib for the manylinux wheel, dev headers
+        # for an sdist fallback build if a wheel is ever missing.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libhidapi-hidraw0 libusb-1.0-0-dev libudev-dev
       - name: Install package
         run: python -m pip install . pytest
       - name: Run tests

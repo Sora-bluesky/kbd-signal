@@ -15,6 +15,7 @@ keywords = ["keychron", "via", "qmk", "rgb", "claude-code", "codex", "hid"]
 classifiers = [
     "Environment :: Console",
     "Operating System :: Microsoft :: Windows",
+    "Operating System :: MacOS",
     "Programming Language :: Python :: 3",
     "Topic :: System :: Hardware",
 ]

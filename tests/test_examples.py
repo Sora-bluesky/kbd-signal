@@ -2,8 +2,9 @@ import json
 import os
 import tomllib
 import unittest
+from unittest import mock
 
-from kbd_signal import __version__
+from kbd_signal import __version__, config
 
 
 class ExampleConfigTests(unittest.TestCase):
@@ -126,6 +127,22 @@ class ExampleConfigTests(unittest.TestCase):
                         "matcher", group,
                         f"{event} silently ignores matcher; drop the key",
                     )
+
+    def test_q1_he_8k_example_targets_the_wired_keyboard(self):
+        path = self._repo_path("examples", "config.q1-he-8k.json")
+        with open(path, encoding="utf-8") as f:
+            raw = json.load(f)
+        self.assertIn("device", raw)
+
+        # Resolve through the real config merge/parse path.
+        with mock.patch.object(config, "CONFIG_FILE", path):
+            dev = config.device()
+        self.assertEqual(dev["vendor_id"], 0x3434)
+        # product_id must pin the wired keyboard, not the Link-KM docking station.
+        self.assertEqual(dev["product_id"], 0x1012)
+        self.assertEqual(dev["v3_channel"], 3)
+        self.assertEqual(dev["effects"]["solid"], 1)
+        self.assertEqual(dev["effects"]["breathing"], 2)
 
     def test_package_versions_match(self):
         with open(self._repo_path("pyproject.toml"), "rb") as f:

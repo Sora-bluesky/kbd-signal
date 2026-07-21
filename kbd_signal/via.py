@@ -11,6 +11,8 @@ deliberately never sent, so a power cycle always restores the user's
 persisted settings and the EEPROM is never worn.
 """
 
+import time
+
 from . import config
 
 # `import hid` is deferred into the functions below: importing this module
@@ -163,18 +165,39 @@ class Keyboard:
             "color": self.get_value(VALUE_COLOR, 2),  # [hue, sat]
         }
 
+    def set_color(self, hue, sat, tries=5, settle=0.12):
+        """Write hue/sat and confirm it stuck via read-back, retrying if not.
+
+        Some firmware resets the color to hue 0 roughly 50-150 ms *after* an
+        EFFECT change, wiping any color written in between, so `done` (green)
+        would come up red (observed on a Keychron Q1 HE 8K). A single write —
+        even reordered after the effect — loses to that delayed reset. Writing,
+        waiting for the reset to land, then re-reading and rewriting converges:
+        once the reset has passed, the next write sticks."""
+        for _ in range(tries):
+            self.set_value(VALUE_COLOR, hue, sat)
+            time.sleep(settle)  # let a pending effect-triggered reset land
+            try:
+                if self.get_value(VALUE_COLOR, 2) == [hue, sat]:
+                    return
+            except IOError:
+                pass
+
     def apply(self, effect=None, hue=None, sat=255, speed=None, brightness=None):
+        # Color is written LAST (after the effect change that can reset it) and
+        # via set_color, which verifies the write landed. See set_color.
         if effect is not None:
             self.set_value(VALUE_EFFECT, effect)
-        if hue is not None:
-            self.set_value(VALUE_COLOR, hue, sat)
         if speed is not None:
             self.set_value(VALUE_SPEED, speed)
         if brightness is not None:
             self.set_value(VALUE_BRIGHTNESS, brightness)
+        if hue is not None:
+            self.set_color(hue, sat)
 
     def apply_snapshot(self, snap):
+        # Color last and verified — same firmware quirk as apply().
         self.set_value(VALUE_EFFECT, snap["effect"])
-        self.set_value(VALUE_COLOR, *snap["color"])
         self.set_value(VALUE_SPEED, snap["speed"])
         self.set_value(VALUE_BRIGHTNESS, snap["brightness"])
+        self.set_color(*snap["color"])

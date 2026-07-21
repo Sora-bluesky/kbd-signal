@@ -310,8 +310,8 @@ def _restore_locked(generation, session, owner_prefix=None, owner_aliases=(),
                 kb.set_value(via.VALUE_BRIGHTNESS, 0)
                 if baseline:
                     kb.set_value(via.VALUE_EFFECT, baseline["effect"])
-                    kb.set_value(via.VALUE_COLOR, *baseline["color"])
                     kb.set_value(via.VALUE_SPEED, baseline["speed"])
+                    kb.set_color(*baseline["color"])  # verified; effect resets color
             elif baseline:
                 kb.apply_snapshot(baseline)
     except (via.DeviceNotFound, OSError) as e:

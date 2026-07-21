@@ -1,4 +1,6 @@
-"""User configuration (%LOCALAPPDATA%/kbd-signal/config.json).
+"""User configuration (config.json in the platform state dir; the dir
+itself is resolved per-OS by kbd_signal._platform.state_dir).
+
 
 Defaults target the Keychron K8 Pro; every device-specific constant can be
 overridden so other VIA-compatible RGB keyboards work without code changes:
@@ -21,8 +23,9 @@ then `kbd-signal raw-effect <n>` to probe its effect indices.
 import json
 import os
 
-STATE_DIR = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")),
-                         "kbd-signal")
+from . import _platform
+
+STATE_DIR = _platform.state_dir()
 CONFIG_FILE = os.path.join(STATE_DIR, "config.json")
 
 DEFAULT_DEVICE = {

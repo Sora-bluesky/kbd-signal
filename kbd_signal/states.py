@@ -13,13 +13,12 @@ user's original lighting.
 
 import contextlib
 import json
-import msvcrt
 import os
 import subprocess
 import sys
 import time
 
-from . import config, via
+from . import _platform, config, via
 
 STATE_DIR = config.STATE_DIR
 STATE_FILE = os.path.join(STATE_DIR, "state.json")
@@ -73,11 +72,10 @@ def _state_lock(timeout=3.0):
     os.makedirs(STATE_DIR, exist_ok=True)
     f = open(os.path.join(STATE_DIR, "state.lock"), "a+b")
     try:
-        f.seek(0)
         deadline = time.monotonic() + timeout
         while True:
             try:
-                msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+                _platform.try_lock(f)
                 break
             except OSError:
                 if time.monotonic() >= deadline:
@@ -87,8 +85,7 @@ def _state_lock(timeout=3.0):
             yield
         finally:
             try:
-                f.seek(0)
-                msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
+                _platform.unlock(f)
             except OSError:
                 pass
     finally:
@@ -331,10 +328,9 @@ def _spawn_delayed_restore(after, generation):
     itself never has to stay resident."""
     cmd = [sys.executable, "-m", "kbd_signal", "restore",
            "--after", str(after), "--gen", str(generation)]
-    flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NO_WINDOW
     try:
-        subprocess.Popen(cmd, creationflags=flags, close_fds=True,
+        subprocess.Popen(cmd, close_fds=True,
                          stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                         stderr=subprocess.DEVNULL)
+                         stderr=subprocess.DEVNULL, **_platform.detach_kwargs())
     except OSError as e:
         log(f"delayed restore spawn failed: {e}")

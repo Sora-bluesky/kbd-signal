@@ -10,7 +10,7 @@
 |------|-----|------|
 | `vendor_id` | `0x3434` | Keychron |
 | `product_id` | `0x1012` | この個体の PID — **配列により異なる場合あり**。下記の注記を参照 |
-| `product_match` | `Q1 HE` | Link-KM ドックとキーボード本体を区別する |
+| `product_match` | `Q1 HE` | Link-KM ドックより本体を優先する(ハードなフィルタではない — 下記参照) |
 | `v3_channel` | `3` | rgb_matrix カスタムチャネル |
 | `reset_on_effect` | `true` | この機種はエフェクト変更後に color/brightness をリセットする — 下記参照 |
 | `effects` | `solid`=1, `breathing`=2 | K8 Pro 既定と同じ番号 |
@@ -28,7 +28,9 @@ found: Keychron  Keychron Link-KM (VID=0x3434 PID=0xd026)
 found: Keychron Keychron Q1 HE 8K (VID=0x3434 PID=0x1012)
 ```
 
-Keychron は物理配列(ANSI / ISO / JIS)ごとに異なる PID を割り当てているため、手元の個体では別の値になることがある。`kbd-signal detect --all` を実行し、自分のキーボードに表示された PID を設定すること。なお `product_match: "Q1 HE"` だけでも本体とドックを区別できる(下記参照)ため、`product_id` を外して `product_match` のみに頼る運用も可能。
+Keychron は物理配列(ANSI / ISO / JIS)ごとに異なる PID を割り当てているため、手元の個体では別の値になることがある。`kbd-signal detect --all` を実行し、自分のキーボードに表示された PID を設定すること。
+
+`product_match` は **優先指定**であって、ハードなフィルタではない: `find_device_path`(`kbd_signal/via.py`)は `product_string` に一致する最初の候補を返すが、**どれも一致しない場合は列挙順で先頭のデバイスにフォールバックする**。現在の product_string(`Keychron  Keychron Link-KM` と `Keychron Keychron Q1 HE 8K`)では `product_match: "Q1 HE"` だけで確実に本体を選べるため `product_id` を外すこともできるが、ファーム更新で product_string が変わると、フォールバックでドック側を掴む可能性がある。**確実なのは `product_id` を明示すること**なので、特別な理由がない限り設定したままにするのが安全。
 
 Keychron の公開定義と突き合わせたところ、PID には **2 系統** あり、配列オフセット(`ANSI` → …0 / `ISO` → …1 / `JIS` → …2)はどちらでも共通:
 
@@ -47,4 +49,4 @@ Keychron の公開定義と突き合わせたところ、PID には **2 系統**
 
 ## 接続
 
-背面スイッチを **「Cable」** にして USB ケーブルで接続する。VIA アプリ / Keychron Launcher は同時起動しない(raw HID 書き込みが競合する)。
+USB ケーブルで接続する(kbd-signal は raw HID をケーブル経由で使う)。VIA アプリ / Keychron Launcher は同時起動しない(raw HID 書き込みが競合する)。

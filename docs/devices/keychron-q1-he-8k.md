@@ -10,7 +10,7 @@ Verified on real hardware. Preset: [`examples/config.q1-he-8k.json`](../../examp
 |-------|-------|-------|
 | `vendor_id` | `0x3434` | Keychron |
 | `product_id` | `0x1012` | this unit's PID — **may differ on your board**; see the note below |
-| `product_match` | `Q1 HE` | tells the keyboard apart from the Link-KM dock |
+| `product_match` | `Q1 HE` | prefers the keyboard over the Link-KM dock (not a hard filter — see below) |
 | `v3_channel` | `3` | rgb_matrix custom channel |
 | `reset_on_effect` | `true` | this board resets color/brightness after an effect change — see below |
 | `effects` | `solid`=1, `breathing`=2 | same indices as the K8 Pro default |
@@ -28,7 +28,9 @@ found: Keychron  Keychron Link-KM (VID=0x3434 PID=0xd026)
 found: Keychron Keychron Q1 HE 8K (VID=0x3434 PID=0x1012)
 ```
 
-Keychron assigns different PIDs per physical layout (ANSI / ISO / JIS), so your board may report a different value. Run `kbd-signal detect --all` and pin the PID it prints for your keyboard. Because `product_match: "Q1 HE"` already distinguishes the keyboard from the dock (see below), you can also drop `product_id` and rely on `product_match` alone.
+Keychron assigns different PIDs per physical layout (ANSI / ISO / JIS), so your board may report a different value. Run `kbd-signal detect --all` and pin the PID it prints for your keyboard.
+
+`product_match` is only a *preference*, not a hard filter: `find_device_path` (`kbd_signal/via.py`) returns the first candidate whose `product_string` contains the match, but **falls back to the first enumerated device when nothing matches**. With the current product strings (`Keychron  Keychron Link-KM` vs `Keychron Keychron Q1 HE 8K`), `product_match: "Q1 HE"` reliably selects the keyboard, so you *could* drop `product_id` — but if a firmware update changes the product string, the fallback could grab the dock instead. Pinning `product_id` is the dependable option; keep it set unless you have a reason not to.
 
 Cross-checked against Keychron's public definitions, there are **two PID schemes** and the layout offset (`ANSI` → …0, `ISO` → …1, `JIS` → …2) holds in both:
 
@@ -47,4 +49,4 @@ When the keyboard is reached through a **Link-KM docking station** (a separate a
 
 ## Connection
 
-Connect via USB cable with the rear switch on **"Cable"**. Do not run the VIA app / Keychron Launcher at the same time (concurrent raw HID writes race).
+Connect via USB cable (this board is wired for kbd-signal's purposes — raw HID runs over the cable). Do not run the VIA app / Keychron Launcher at the same time (concurrent raw HID writes race).

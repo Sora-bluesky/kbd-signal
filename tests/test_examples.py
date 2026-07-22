@@ -73,17 +73,22 @@ class ExampleConfigTests(unittest.TestCase):
             self.assertEqual(handler["timeout"], 5)
 
     def test_claude_hooks_matcher_contract_matches_spec(self):
-        # Per the Claude Code hooks spec, matcher only fires on the tool-name
-        # / session-end-reason events; Stop silently ignores a matcher field,
-        # so leaving it on Stop would be a copy-paste trap for users. Pin the
-        # per-event contract so either direction (adding one to Stop, dropping
-        # it from a supported event) breaks the test.
+        # Pin the per-event matcher contract for the events this example uses:
+        # Stop silently ignores `matcher` (a leftover would be a copy-paste
+        # trap), the other three honor it. Either direction (adding one to
+        # Stop, dropping it from a supported event) breaks the test. Also
+        # asserts each event's groups and every group's hooks are non-empty,
+        # so a stray `[]` can't slip past.
         path = self._repo_path("examples", "claude-hooks.json")
         with open(path, encoding="utf-8") as f:
             config = json.load(f)
         matcher_supported = {"PermissionRequest", "PostToolUse", "SessionEnd"}
         for event, groups in config["hooks"].items():
+            self.assertTrue(groups, f"{event} has no hook groups")
             for group in groups:
+                self.assertTrue(
+                    group.get("hooks"), f"{event}: hook group has no handlers",
+                )
                 if event in matcher_supported:
                     self.assertEqual(
                         group.get("matcher"), "*",
@@ -96,8 +101,9 @@ class ExampleConfigTests(unittest.TestCase):
                     )
 
     def test_codex_hooks_matcher_contract_matches_spec(self):
-        # Same shape as the Claude example (see above): Codex silently ignores
-        # matcher on Stop / UserPromptSubmit.
+        # Same shape as the Claude example (see above), scoped to the events
+        # this Codex example uses: Codex silently ignores matcher on Stop /
+        # UserPromptSubmit.
         path = self._repo_path("examples", "codex-hooks.json")
         with open(path, encoding="utf-8") as f:
             config = json.load(f)
@@ -105,7 +111,11 @@ class ExampleConfigTests(unittest.TestCase):
             "PermissionRequest", "PostToolUse", "SessionStart", "SubagentStop",
         }
         for event, groups in config["hooks"].items():
+            self.assertTrue(groups, f"{event} has no hook groups")
             for group in groups:
+                self.assertTrue(
+                    group.get("hooks"), f"{event}: hook group has no handlers",
+                )
                 if event in matcher_supported:
                     self.assertEqual(
                         group.get("matcher"), "*",

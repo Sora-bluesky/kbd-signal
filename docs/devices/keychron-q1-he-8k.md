@@ -40,7 +40,7 @@ Cross-checked against Keychron's public definitions, there are **two PID schemes
 | ISO | `0x0B11` | `0x1011` |
 | JIS | `0x0B12` | `0x1012` |
 
-¹ [`Keychron/qmk_firmware` → `keyboards/keychron/q1_he/{ansi,iso,jis}_encoder/keyboard.json`](https://github.com/Keychron/qmk_firmware/tree/master/keyboards/keychron/q1_he) (VID `0x3434`; Q1 HE 8K shares the `q1_he` firmware). Matching VIA definitions: [`SRGBmods/QMK-Binaries` → `VIA_JSON/keychron`](https://github.com/SRGBmods/QMK-Binaries/tree/master/VIA_JSON/keychron).
+¹ [`Keychron/qmk_firmware` → `keyboards/keychron/q1_he/{ansi,iso,jis}_encoder/info.json`](https://github.com/Keychron/qmk_firmware/tree/hall_effect_playground/keyboards/keychron/q1_he) (Hall-Effect boards live on the `hall_effect_playground` branch, not `master`; VID `0x3434`). The QMK tree names the board `q1_he` with no explicit "8K" variant — the Q1 HE 8K shares this `q1_he` namespace, confirmed empirically here since the factory-firmware PID `0x1012` drives the board on real hardware. Matching VIA definitions: [`SRGBmods/QMK-Binaries` → `VIA_JSON/keychron`](https://github.com/SRGBmods/QMK-Binaries/tree/main/VIA_JSON/keychron).
 ² The stock firmware shipped for the [Keychron Launcher](https://www.keychron.com/pages/firmware-and-json-files-of-the-keychron-he-series-keyboards); its PIDs aren't published in the open QMK / the-via repos. This preset's `0x1012` is a factory-firmware value — i.e. the JIS slot — matching the unit it was verified on.
 
 ## Docking-station gotcha

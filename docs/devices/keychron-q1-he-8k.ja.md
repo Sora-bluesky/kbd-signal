@@ -40,7 +40,7 @@ Keychron の公開定義と突き合わせたところ、PID には **2 系統**
 | ISO | `0x0B11` | `0x1011` |
 | JIS | `0x0B12` | `0x1012` |
 
-¹ [`Keychron/qmk_firmware` → `keyboards/keychron/q1_he/{ansi,iso,jis}_encoder/keyboard.json`](https://github.com/Keychron/qmk_firmware/tree/master/keyboards/keychron/q1_he)(VID `0x3434`。Q1 HE 8K は `q1_he` のファームを共有)。対応する VIA 定義: [`SRGBmods/QMK-Binaries` → `VIA_JSON/keychron`](https://github.com/SRGBmods/QMK-Binaries/tree/master/VIA_JSON/keychron)。
+¹ [`Keychron/qmk_firmware` → `keyboards/keychron/q1_he/{ansi,iso,jis}_encoder/info.json`](https://github.com/Keychron/qmk_firmware/tree/hall_effect_playground/keyboards/keychron/q1_he)(Hall-Effect 機は `master` ではなく `hall_effect_playground` ブランチにある。VID `0x3434`)。QMK ツリーでは `q1_he` という名前で「8K」の明示的なバリアントは無く、Q1 HE 8K はこの `q1_he` 名前空間を共有している(工場ファームの PID `0x1012` が実機で動作することから実証)。対応する VIA 定義: [`SRGBmods/QMK-Binaries` → `VIA_JSON/keychron`](https://github.com/SRGBmods/QMK-Binaries/tree/main/VIA_JSON/keychron)。
 ² [Keychron Launcher](https://www.keychron.com/pages/firmware-and-json-files-of-the-keychron-he-series-keyboards) 向けに出荷される工場ファーム。その PID は公開の QMK / the-via リポジトリには載っていない。このプリセットの `0x1012` は工場ファーム側の値 = JIS 枠で、検証した個体と一致する。
 
 ## ドッキングステーションの注意点

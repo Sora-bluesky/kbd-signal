@@ -141,6 +141,9 @@ class ExampleConfigTests(unittest.TestCase):
         # product_id must pin the wired keyboard, not the Link-KM docking station.
         self.assertEqual(dev["product_id"], 0x1012)
         self.assertEqual(dev["v3_channel"], 3)
+        # This board resets color/brightness after an effect change; the
+        # preset must opt into the workaround so `done` doesn't stick red.
+        self.assertTrue(dev["reset_on_effect"])
         self.assertEqual(dev["effects"]["solid"], 1)
         self.assertEqual(dev["effects"]["breathing"], 2)
 

@@ -1,0 +1,11 @@
+{
+  "description": "kbd-signal device preset for the Keychron Q1 HE 8K (wired, VIA protocol 13). product_id is this unit's PID (0x1012) and may differ by keyboard layout - run 'kbd-signal detect --all' to confirm yours. Pinning it keeps a Link-KM docking station (a separate accessory that also enumerates as a 0x3434 raw-HID device when in use) from being picked by mistake; product_match 'Q1 HE' also distinguishes the two. reset_on_effect is true because this board resets color/brightness ~50-150ms after an effect change. Copy the device block into your config.json.",
+  "device": {
+    "vendor_id": "0x3434",
+    "product_id": "0x1012",
+    "product_match": "Q1 HE",
+    "v3_channel": 3,
+    "reset_on_effect": true,
+    "effects": {"solid": 1, "breathing": 2}
+  }
+}

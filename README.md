@@ -153,6 +153,7 @@ The protocol layer is not K8 Pro specific: VIA v2 value ids are fixed by the VIA
     "product_id": null,
     "product_match": "K8",
     "v3_channel": 3,
+    "reset_on_effect": false,
     "effects": {"solid": 1, "breathing": 2}
   }
 }
@@ -164,6 +165,12 @@ Workflow for a new board:
 2. `kbd-signal raw-effect <n>` — step through effect indices until you find solid/breathing, then set `effects`
 3. On a VIA v3 board, set `v3_channel` to the keyboard's `id_qmk_rgb_matrix` channel from its VIA definition (v2 boards ignore it)
 4. `kbd-signal test`
+
+Some firmware resets the color (to red) and brightness (to full) ~50–150 ms
+*after* an effect change. Most boards don't, so this workaround is a per-device
+opt-in: set `"reset_on_effect": true` only if `done` flashes or sticks red on
+your board, and kbd-signal then holds the LEDs dark while it settles the color
+across the reset window. (The Keychron Q1 HE 8K is one board known to need it.)
 
 Boards without RGB (single-color backlight) are out of scope — states are color-coded.
 

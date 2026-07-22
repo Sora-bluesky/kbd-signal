@@ -157,12 +157,15 @@ Codexには`SessionEnd`がないため、承認待ちの最中にアプリを強
     "product_id": null,
     "product_match": "K8",
     "v3_channel": 3,
+    "reset_on_effect": false,
     "effects": {"solid": 1, "breathing": 2}
   }
 }
 ```
 
 新しい機種での手順: `kbd-signal detect --all` で VID/PID を調べて設定 → `kbd-signal raw-effect <n>` で solid/breathing の番号を特定して `effects` に設定 →(VIA v3 機なら)`v3_channel` を機種の VIA 定義に合わせる → `kbd-signal test`。RGB 非搭載機(単色バックライト)は色で状態を区別する設計のため対象外。
+
+一部のファームは、エフェクト変更の約 50〜150ms 後に color(赤)と brightness(全開)をリセットします。多くの機種では起きないため、これは機種ごとのオプトイン方式の workaround です。`done` が赤くフラッシュ/固着する機種でのみ `"reset_on_effect": true` を設定してください。有効化すると、リセット窓の間 LED を暗く保ったまま色を確定させます。(既知の該当機種の一例が Keychron Q1 HE 8K です。)
 
 ## License
 

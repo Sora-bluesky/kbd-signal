@@ -12,10 +12,12 @@ Verified on real hardware. Preset: [`examples/config.q1-he-8k.json`](../../examp
 | `product_id` | `0x1012` | this unit's PID — **may differ on your board**; see the note below |
 | `product_match` | `Q1 HE` | tells the keyboard apart from the Link-KM dock |
 | `v3_channel` | `3` | rgb_matrix custom channel |
+| `reset_on_effect` | `true` | this board resets color/brightness after an effect change — see below |
 | `effects` | `solid`=1, `breathing`=2 | same indices as the K8 Pro default |
 
 - VIA protocol **13** (v3 custom channel). On channel 3 the value ids are `brightness`=1, `effect`=2, `speed`=3, `color`(hue, sat)=4.
 - Hue uses the standard QMK 0–255 wheel (red=0, yellow≈43, green=85, blue=170), so kbd-signal's built-in colors need no remapping.
+- `reset_on_effect` is `true` because this board (verified on real hardware) resets color to red and brightness to full ~50–150 ms **after** an effect change, which would otherwise leave `done` flashing/stuck red. With it on, kbd-signal holds the LEDs dark across that window and settles the color afterward. The flag is default-`false`, so the preset opts in for you.
 
 ### About `product_id` (0x1012)
 

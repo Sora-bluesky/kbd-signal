@@ -12,10 +12,12 @@
 | `product_id` | `0x1012` | この個体の PID — **配列により異なる場合あり**。下記の注記を参照 |
 | `product_match` | `Q1 HE` | Link-KM ドックとキーボード本体を区別する |
 | `v3_channel` | `3` | rgb_matrix カスタムチャネル |
+| `reset_on_effect` | `true` | この機種はエフェクト変更後に color/brightness をリセットする — 下記参照 |
 | `effects` | `solid`=1, `breathing`=2 | K8 Pro 既定と同じ番号 |
 
 - VIA プロトコル **13**(v3 カスタムチャネル)。チャネル 3 の value id は `brightness`=1 / `effect`=2 / `speed`=3 / `color`(hue, sat)=4。
 - hue は QMK 標準の 0–255 ホイール(red=0 / yellow≈43 / green=85 / blue=170)。kbd-signal 組み込みの配色をそのまま使える。
+- `reset_on_effect` を `true` にしているのは、この機種(実機で確認)がエフェクト変更の約 50〜150ms **後**に color を赤・brightness を全開へリセットするため。そのままだと `done` が赤くフラッシュ/固着してしまう。有効化すると、そのリセット窓の間 LED を暗く保ったまま色を確定させる。既定は `false` なので、このプリセットで代わりにオプトインしている。
 
 ### `product_id`(0x1012)について
 

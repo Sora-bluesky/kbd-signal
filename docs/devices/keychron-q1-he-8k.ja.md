@@ -28,6 +28,17 @@ found: Keychron Keychron Q1 HE 8K (VID=0x3434 PID=0x1012)
 
 Keychron は物理配列(ANSI / ISO / JIS)ごとに異なる PID を割り当てているため、手元の個体では別の値になることがある。`kbd-signal detect --all` を実行し、自分のキーボードに表示された PID を設定すること。なお `product_match: "Q1 HE"` だけでも本体とドックを区別できる(下記参照)ため、`product_id` を外して `product_match` のみに頼る運用も可能。
 
+Keychron の公開定義と突き合わせたところ、PID には **2 系統** あり、配列オフセット(`ANSI` → …0 / `ISO` → …1 / `JIS` → …2)はどちらでも共通:
+
+| 配列 | QMK ファーム¹ | 工場出荷 / Launcher ファーム² |
+|------|--------------|------------------------------|
+| ANSI | `0x0B10` | `0x1010` |
+| ISO | `0x0B11` | `0x1011` |
+| JIS | `0x0B12` | `0x1012` |
+
+¹ [`Keychron/qmk_firmware` → `keyboards/keychron/q1_he/{ansi,iso,jis}_encoder/keyboard.json`](https://github.com/Keychron/qmk_firmware/tree/master/keyboards/keychron/q1_he)(VID `0x3434`。Q1 HE 8K は `q1_he` のファームを共有)。対応する VIA 定義: [`SRGBmods/QMK-Binaries` → `VIA_JSON/keychron`](https://github.com/SRGBmods/QMK-Binaries/tree/master/VIA_JSON/keychron)。
+² [Keychron Launcher](https://www.keychron.com/pages/firmware-and-json-files-of-the-keychron-he-series-keyboards) 向けに出荷される工場ファーム。その PID は公開の QMK / the-via リポジトリには載っていない。このプリセットの `0x1012` は工場ファーム側の値 = JIS 枠で、検証した個体と一致する。
+
 ## ドッキングステーションの注意点
 
 **Link-KM ドッキングステーション経由**で接続すると(付属品ではなく別途用意したドックで、この構成で検証した)、**このドックも `0x3434` の raw HID(`0xFF60`)デバイスとして列挙される**(PID `0xd026`)。既定の `product_match` である `K8` はドックにもキーボードにも一致しないため、検出がドック側を掴むことがあり(プロトコルにも値読み取りにも無応答)、全コマンドが失敗する。このプリセットでは `Q1 HE` で照合し(ドックは `Keychron Link-KM` を報告する)、`product_id` をキーボード本体に固定することで回避している。

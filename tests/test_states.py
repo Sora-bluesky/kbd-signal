@@ -31,9 +31,11 @@ class FakeKeyboard:
 
     def apply(self, **pattern):
         self.applied.append(pattern)
+        return True
 
     def apply_snapshot(self, baseline):
         self.restored.append(baseline)
+        return True
 
     def set_value(self, *values):
         self.values.append(values)

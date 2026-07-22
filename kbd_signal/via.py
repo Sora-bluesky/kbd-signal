@@ -11,6 +11,8 @@ deliberately never sent, so a power cycle always restores the user's
 persisted settings and the EEPROM is never worn.
 """
 
+import time
+
 from . import config
 
 # `import hid` is deferred into the functions below: importing this module
@@ -83,6 +85,10 @@ class Keyboard:
         self._channel = self._cfg["v3_channel"]
         self._dev = hid.device()
         self._dev.open_path(find_device_path(self._cfg))
+        # Per-device quirk flag (config, default off): keyboards whose firmware
+        # resets color/brightness shortly after an EFFECT change opt into the
+        # dark-hold workaround below. Off by default — most boards don't need it.
+        self._reset_on_effect = bool(self._cfg.get("reset_on_effect", False))
         self.protocol = self._probe_protocol()
         self._v3 = self.protocol >= 11
 
@@ -142,12 +148,13 @@ class Keyboard:
         else:
             self._request(CMD_CUSTOM_SET, v2_id, *data, tries=2, match=2)
 
-    def get_value(self, value_id, length=1):
+    def get_value(self, value_id, length=1, tries=6):
         v2_id, v3_id = _VALUE_IDS[value_id]
         if self._v3:
-            resp = self._request(CMD_CUSTOM_GET, self._channel, v3_id)
+            resp = self._request(CMD_CUSTOM_GET, self._channel, v3_id,
+                                 tries=tries)
         else:
-            resp = self._request(CMD_CUSTOM_GET, v2_id)
+            resp = self._request(CMD_CUSTOM_GET, v2_id, tries=tries)
         if resp is None:
             raise IOError(f"no response for value {value_id}")
         offset = 3 if self._v3 else 2
@@ -163,18 +170,100 @@ class Keyboard:
             "color": self.get_value(VALUE_COLOR, 2),  # [hue, sat]
         }
 
+    # Some firmware, ~50-150 ms *after* an EFFECT change, performs a reset that
+    # forces BOTH the color (to hue 0) and the brightness (to full). Writing the
+    # color once loses to it (`done` stays red); settling the color at full
+    # brightness flashes that red on screen. set_color therefore holds the LEDs
+    # dark while it settles the color across the reset window: it keeps
+    # rewriting brightness=0 and the color, so the reset's full-brightness red is
+    # overwritten within one write cycle (never visibly shown), then confirms
+    # the color once the window has passed. The caller raises brightness
+    # afterwards, on the already-settled color.
+    #
+    # The dark hold is a per-device workaround gated on `reset_on_effect`
+    # (config). Only boards whose firmware shows this quirk enable it; every
+    # other board uses hold=0 and simply confirms the color with no dark dip.
+    COLOR_HOLD = 0.2     # blast dark past the observed ~150 ms reset window
+    COLOR_SETTLE = 0.03  # read-back cadence once the window has passed
+    COLOR_BUDGET = 1.5   # hard ceiling; stays well under the 5 s hook timeout
+    _READ_TIMEOUT = 0.25  # per-attempt HID read timeout (see _request)
+
+    def set_color(self, hue, sat, hold=None, settle=COLOR_SETTLE,
+                  budget=COLOR_BUDGET):
+        """Settle the color to (hue, sat) while keeping the LEDs dark, defeating
+        the delayed post-effect reset without ever showing its red. Leaves
+        brightness at 0 (the caller raises it on the settled color). Never
+        raises — write/read errors count as a miss — so a hook always exits
+        cleanly. Returns True once the color reads back correct, False if it
+        gave up within `budget` (the caller logs that).
+
+        `hold` defaults to the device gate: COLOR_HOLD only when the firmware is
+        known to reset (reset_on_effect), else 0. The read-back is capped to the
+        remaining budget so an unresponsive get can't blow past `budget`."""
+        if hold is None:
+            hold = self.COLOR_HOLD if self._reset_on_effect else 0.0
+        deadline = time.monotonic() + budget
+        hold_until = time.monotonic() + hold
+        while time.monotonic() < deadline:
+            try:
+                self.set_value(VALUE_BRIGHTNESS, 0)
+                self.set_value(VALUE_COLOR, hue, sat)
+            except OSError:
+                pass
+            if time.monotonic() < hold_until:
+                continue  # blast through the reset window before trusting a read
+            time.sleep(settle)
+            # Cap read attempts to what the budget still allows — each blocks up
+            # to _READ_TIMEOUT — so a no-response get can't overshoot `budget`.
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            tries = max(1, min(6, int(remaining / self._READ_TIMEOUT)))
+            try:
+                if self.get_value(VALUE_COLOR, 2, tries=tries) == [hue, sat]:
+                    return True
+            except OSError:
+                pass
+        return False
+
     def apply(self, effect=None, hue=None, sat=255, speed=None, brightness=None):
+        """Apply a lighting pattern. Returns whether the color was confirmed
+        (True when there is no color to set, or the device needs no workaround).
+
+        On a reset-prone device the writes are ordered brightness=0 -> effect ->
+        color-settled-dark -> brightness, so the reset can never land while the
+        LEDs are bright, and brightness is raised ONLY once the color is
+        confirmed — a failed settle leaves the LEDs dark (never the reset's red)
+        and returns False for the caller to log."""
+        if not self._reset_on_effect:
+            # No delayed post-effect reset: write directly, no dark hold.
+            if effect is not None:
+                self.set_value(VALUE_EFFECT, effect)
+            if speed is not None:
+                self.set_value(VALUE_SPEED, speed)
+            if hue is not None:
+                self.set_value(VALUE_COLOR, hue, sat)
+            if brightness is not None:
+                self.set_value(VALUE_BRIGHTNESS, brightness)
+            return True
+        settling = hue is not None
+        if settling:
+            # Drop dark BEFORE the effect change so the reset can't flash bright.
+            self.set_value(VALUE_BRIGHTNESS, 0)
         if effect is not None:
             self.set_value(VALUE_EFFECT, effect)
-        if hue is not None:
-            self.set_value(VALUE_COLOR, hue, sat)
         if speed is not None:
             self.set_value(VALUE_SPEED, speed)
-        if brightness is not None:
+        ok = True
+        if settling:
+            ok = self.set_color(hue, sat)
+        if brightness is not None and ok:
             self.set_value(VALUE_BRIGHTNESS, brightness)
+        return ok
 
     def apply_snapshot(self, snap):
-        self.set_value(VALUE_EFFECT, snap["effect"])
-        self.set_value(VALUE_COLOR, *snap["color"])
-        self.set_value(VALUE_SPEED, snap["speed"])
-        self.set_value(VALUE_BRIGHTNESS, snap["brightness"])
+        # Same ordering/gating as apply(); route through it so the device gate
+        # and the brightness-only-if-confirmed rule apply to restore too.
+        hue, sat = snap["color"]
+        return self.apply(effect=snap["effect"], hue=hue, sat=sat,
+                          speed=snap["speed"], brightness=snap["brightness"])

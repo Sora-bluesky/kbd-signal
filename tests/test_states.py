@@ -210,5 +210,46 @@ class StateOwnershipTests(unittest.TestCase):
         self.assertEqual(state["active"], "waiting")
 
 
+class LogRotationTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.stack = ExitStack()
+        self.addCleanup(self.stack.close)
+
+        state_dir = self.tmp.name
+        self.log_file = os.path.join(state_dir, "kbd-signal.log")
+        self.stack.enter_context(mock.patch.object(states, "STATE_DIR", state_dir))
+        self.stack.enter_context(
+            mock.patch.object(states, "LOG_FILE", self.log_file)
+        )
+        # Small cap so a couple of lines trip rotation.
+        self.stack.enter_context(
+            mock.patch.object(states, "LOG_MAX_BYTES", 80)
+        )
+
+    def test_no_rotation_below_limit(self):
+        states.log("small")
+        self.assertTrue(os.path.exists(self.log_file))
+        self.assertFalse(os.path.exists(self.log_file + ".1"))
+
+    def test_rotates_once_over_limit(self):
+        for i in range(5):
+            states.log(f"line {i}")
+        # Once over the cap the live log is rotated to `.1` and a fresh one
+        # starts; total on disk stays bounded at ~2x the cap.
+        self.assertTrue(os.path.exists(self.log_file + ".1"))
+        self.assertLessEqual(os.path.getsize(self.log_file), states.LOG_MAX_BYTES)
+
+    def test_rotation_failure_is_swallowed(self):
+        # A sharing violation (Windows) or any OSError from os.replace must
+        # not propagate — the line is written, the rotation is simply skipped.
+        for i in range(3):
+            states.log(f"fill {i}")
+        with mock.patch.object(states.os, "replace", side_effect=OSError):
+            states.log("triggers rotation")  # should not raise
+        self.assertTrue(os.path.exists(self.log_file))
+
+
 if __name__ == "__main__":
     unittest.main()

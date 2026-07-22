@@ -29,6 +29,11 @@ LOG_FILE = os.path.join(STATE_DIR, "kbd-signal.log")
 
 DONE_RESTORE_AFTER = 5  # seconds
 
+# Cap the log by rotating to a single `.1` generation once it grows past this,
+# so total on-disk usage stays bounded at ~2x instead of growing forever
+# (every hook writes a line; PostToolUse fires constantly).
+LOG_MAX_BYTES = 1024 * 1024  # 1 MB
+
 STATE_NAMES = ("waiting", "done", "error")
 
 
@@ -52,8 +57,19 @@ def log(msg):
         os.makedirs(STATE_DIR, exist_ok=True)
         with open(LOG_FILE, "a", encoding="utf-8") as f:
             f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {msg}\n")
+            size = f.tell()  # cheaper than a separate getsize()/stat per line
     except OSError:
-        pass
+        return
+    if size >= LOG_MAX_BYTES:
+        # Single-generation rotation, lock-free best-effort. On Windows a
+        # concurrent hook process holding the file open can make os.replace
+        # raise PermissionError (sharing violation); swallow it and let the
+        # next line retry — dropping a rotation beats hanging a hook, same
+        # philosophy as the bounded state lock.
+        try:
+            os.replace(LOG_FILE, LOG_FILE + ".1")
+        except OSError:
+            pass
 
 
 class LockTimeout(Exception):

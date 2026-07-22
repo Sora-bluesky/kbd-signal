@@ -210,5 +210,60 @@ class StateOwnershipTests(unittest.TestCase):
         self.assertEqual(state["active"], "waiting")
 
 
+class LogRotationTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.stack = ExitStack()
+        self.addCleanup(self.stack.close)
+
+        state_dir = self.tmp.name
+        self.log_file = os.path.join(state_dir, "kbd-signal.log")
+        self.stack.enter_context(mock.patch.object(states, "STATE_DIR", state_dir))
+        self.stack.enter_context(
+            mock.patch.object(states, "LOG_FILE", self.log_file)
+        )
+        # Small cap so a couple of lines trip rotation.
+        self.stack.enter_context(
+            mock.patch.object(states, "LOG_MAX_BYTES", 80)
+        )
+
+    def test_no_rotation_below_limit(self):
+        states.log("small")
+        self.assertTrue(os.path.exists(self.log_file))
+        self.assertFalse(os.path.exists(self.log_file + ".1"))
+
+    def test_rotates_once_over_limit(self):
+        for i in range(5):
+            states.log(f"line {i}")
+        # Once over the cap the live log is rotated to `.1` and a fresh one
+        # starts; total on disk stays bounded at ~2x the cap.
+        self.assertTrue(os.path.exists(self.log_file + ".1"))
+        self.assertLessEqual(os.path.getsize(self.log_file), states.LOG_MAX_BYTES)
+
+    def test_rotation_failure_is_swallowed(self):
+        # A sharing violation (Windows) or any OSError from os.replace must
+        # not propagate — the line is written, the rotation is simply skipped.
+        #
+        # Grow the live log to just under the cap so the *next* write is the
+        # one that trips rotation, and mock os.replace only for that write —
+        # otherwise an earlier line rotates for real and resets the file,
+        # leaving the failure path unexercised.
+        states.log("pad")
+        line_bytes = os.path.getsize(self.log_file)
+        while os.path.getsize(self.log_file) + line_bytes < states.LOG_MAX_BYTES:
+            states.log("pad")
+        self.assertLess(os.path.getsize(self.log_file), states.LOG_MAX_BYTES)
+
+        with mock.patch.object(
+            states.os, "replace", side_effect=OSError
+        ) as replace:
+            states.log("this line trips rotation")  # must not raise
+        replace.assert_called_once()  # the failing rotation was attempted
+        self.assertTrue(os.path.exists(self.log_file))  # line still written
+        # os.replace failed, so no generation was produced.
+        self.assertFalse(os.path.exists(self.log_file + ".1"))
+
+
 if __name__ == "__main__":
     unittest.main()

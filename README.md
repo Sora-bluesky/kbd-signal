@@ -89,6 +89,8 @@ Register the same command for `PermissionRequest`, `PostToolUse`, `Stop`, and `S
 {"type": "command", "command": "kbd-signal hook claude", "timeout": 5}
 ```
 
+Ready-to-merge: the `hooks` object in [examples/claude-hooks.json](examples/claude-hooks.json) covers all four events — merge it into your `settings.json` `hooks` (do not overwrite existing entries).
+
 (pipx install — the `kbd-signal` shim is on PATH. With a plain pip install, use `py -m kbd_signal hook claude` instead, matching the interpreter you installed into.)
 
 **Do not put a filesystem path in the program position.** Hook commands may run through either `cmd` or a POSIX shell: backslashed paths get eaten as escapes by the POSIX shell, and forward-slashed program paths fail under `cmd` with "Access is denied" — both silently, so the hook simply never signals (measured on Windows 11). PATH-resolved names (`kbd-signal`, `py -m kbd_signal`) work under both. The entry point is cheap when idle (the hidapi DLL is imported lazily), so the same command is fine for hot hooks like `PostToolUse`.

@@ -244,11 +244,25 @@ class LogRotationTests(unittest.TestCase):
     def test_rotation_failure_is_swallowed(self):
         # A sharing violation (Windows) or any OSError from os.replace must
         # not propagate — the line is written, the rotation is simply skipped.
-        for i in range(3):
-            states.log(f"fill {i}")
-        with mock.patch.object(states.os, "replace", side_effect=OSError):
-            states.log("triggers rotation")  # should not raise
-        self.assertTrue(os.path.exists(self.log_file))
+        #
+        # Grow the live log to just under the cap so the *next* write is the
+        # one that trips rotation, and mock os.replace only for that write —
+        # otherwise an earlier line rotates for real and resets the file,
+        # leaving the failure path unexercised.
+        states.log("pad")
+        line_bytes = os.path.getsize(self.log_file)
+        while os.path.getsize(self.log_file) + line_bytes < states.LOG_MAX_BYTES:
+            states.log("pad")
+        self.assertLess(os.path.getsize(self.log_file), states.LOG_MAX_BYTES)
+
+        with mock.patch.object(
+            states.os, "replace", side_effect=OSError
+        ) as replace:
+            states.log("this line trips rotation")  # must not raise
+        replace.assert_called_once()  # the failing rotation was attempted
+        self.assertTrue(os.path.exists(self.log_file))  # line still written
+        # os.replace failed, so no generation was produced.
+        self.assertFalse(os.path.exists(self.log_file + ".1"))
 
 
 if __name__ == "__main__":

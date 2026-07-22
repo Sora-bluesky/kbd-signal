@@ -53,6 +53,14 @@ def patterns():
 
 
 def log(msg):
+    """Append one line, rotating to `.1` past LOG_MAX_BYTES.
+
+    Rotation is lock-free: between concurrent hook processes a rare 1-2
+    lines or one generation of logs may be lost (a check-then-replace
+    race, or a swallowed OSError below), but making a hook wait is worse.
+    Same "drop a line rather than hang" philosophy as the bounded state
+    lock — logs are diagnostic, never worth blocking a signal for.
+    """
     try:
         os.makedirs(STATE_DIR, exist_ok=True)
         with open(LOG_FILE, "a", encoding="utf-8") as f:

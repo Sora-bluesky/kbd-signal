@@ -293,10 +293,19 @@ def _wake_reserved(state, now):
     beyond now + WAITING_WAKE_AFTER is impossible for a live reservation
     (the wall clock stepped back under it) and is treated as absent
     rather than trusted — it could otherwise suppress wake-ups for an
-    arbitrary while."""
+    arbitrary while.
+
+    A reservation also proves nothing across a reboot: the sleeper died
+    with the OS, and its stored monotonic mark — taken on the previous
+    boot — reads as larger than the current clock, which invalidates it
+    so the next waiting entry spawns a replacement (#36 review).
+    """
     wake_at = state.get("wake_at")
+    wake_mono = state.get("wake_mono")
     return (isinstance(wake_at, (int, float))
-            and now < wake_at <= now + WAITING_WAKE_AFTER)
+            and now < wake_at <= now + WAITING_WAKE_AFTER
+            and isinstance(wake_mono, (int, float))
+            and wake_mono <= time.monotonic())
 
 
 def _reserve_wake(state):
@@ -315,7 +324,16 @@ def _reserve_wake(state):
     if _wake_reserved(state, now):
         return False
     state["wake_at"] = now + WAITING_WAKE_AFTER
+    state["wake_mono"] = time.monotonic()
     return True
+
+
+def _cancel_wake(state):
+    """Drop a wake reservation whose sleeper never started, so the next
+    waiting entry retries instead of trusting a wake that will never
+    come (#36 review)."""
+    state.pop("wake_at", None)
+    state.pop("wake_mono", None)
 
 
 def _looks_like_signal(snap):
@@ -518,7 +536,10 @@ def _apply_state(kb, state, name, session, pattern, owner_prefix,
     if name == "done":
         _spawn_delayed_restore(DONE_RESTORE_AFTER, state["generation"])
     elif spawn_wake:
-        _spawn_delayed_restore(WAITING_WAKE_AFTER, state["generation"])
+        if not _spawn_delayed_restore(WAITING_WAKE_AFTER,
+                                      state["generation"]):
+            _cancel_wake(state)
+            save_state(state)
     return True
 
 
@@ -608,10 +629,15 @@ def _restore_locked(generation, session, owner_prefix=None, owner_aliases=(),
     mode = load_config().get("restore", "baseline")
     try:
         with via.Keyboard() as kb:
-            if mode == "off":
-                # Go dark first (avoids a flash of the baseline effect), then
-                # put the stored effect/color back so a manual Fn wake-up
-                # shows the user's own settings, not our last signal.
+            if mode == "off" or not baseline:
+                # Off mode always goes dark first (avoids a flash of the
+                # baseline effect), then puts the stored effect/color back so
+                # a manual Fn wake-up shows the user's own settings. With no
+                # baseline at all (discarded as signal-polluted, or never
+                # captured) there is nothing to repaint in either mode, and
+                # under the default "baseline" mode this used to skip the
+                # keyboard entirely — leaving the last signal lit forever.
+                # Going dark is the only safe restore then (#35 review).
                 kb.set_value(via.VALUE_BRIGHTNESS, 0)
                 if baseline:
                     kb.set_value(via.VALUE_EFFECT, baseline["effect"])
@@ -625,7 +651,7 @@ def _restore_locked(generation, session, owner_prefix=None, owner_aliases=(),
                 # reliably goes dark.
                 if not kb.settle_brightness(0):
                     log("restore: brightness 0 not confirmed after retries")
-            elif baseline:
+            else:
                 if not kb.apply_snapshot(baseline):
                     # Color never settled: the LEDs were left dark, and
                     # raising brightness onto the wrong color would defeat
@@ -644,6 +670,7 @@ def _restore_locked(generation, session, owner_prefix=None, owner_aliases=(),
         # reservation across the idle gap so the next waiting entry does
         # not stack another one behind it.
         cleared["wake_at"] = state["wake_at"]
+        cleared["wake_mono"] = state["wake_mono"]
     save_state(cleared)
     log("restore")
     return True
@@ -651,7 +678,9 @@ def _restore_locked(generation, session, owner_prefix=None, owner_aliases=(),
 
 def _spawn_delayed_restore(after, generation):
     """Fire-and-forget `kbd-signal restore --after N --gen G` so the CLI
-    itself never has to stay resident."""
+    itself never has to stay resident. Returns False when the process
+    could not be started (the caller may drop a wake reservation that
+    now has no sleeper behind it)."""
     cmd = [sys.executable, "-m", "kbd_signal", "restore",
            "--after", str(after), "--gen", str(generation)]
     try:
@@ -660,3 +689,5 @@ def _spawn_delayed_restore(after, generation):
                          stderr=subprocess.DEVNULL, **_platform.detach_kwargs())
     except OSError as e:
         log(f"delayed restore spawn failed: {e}")
+        return False
+    return True

@@ -638,6 +638,31 @@ class TTLWakeUpTests(StateFileTestCase):
         self.assertIsNone(states.load_state()["active"])
         self.assertEqual(FakeKeyboard.restored, [FakeKeyboard().snapshot()])
 
+    def test_reboot_invalidates_the_wake_reservation(self):
+        # The sleeper died with the OS. Its reservation carries a monotonic
+        # mark from the previous boot, which reads as larger than the
+        # current clock — the next waiting entry must spawn a replacement.
+        states.set_state("waiting", session="claude:session-a:main")
+        state = states.load_state()
+        state["wake_mono"] = time.monotonic() + 10_000_000
+        states.save_state(state)
+
+        states.set_state("waiting", session="codex:session-b:main")
+
+        self.assertEqual(self.spawn_restore.call_count, 2)
+
+    def test_failed_wake_spawn_drops_the_reservation(self):
+        # A reservation without a sleeper behind it would suppress every
+        # replacement; when the spawn fails the reservation must go too.
+        self.spawn_restore.return_value = False
+        states.set_state("waiting", session="claude:session-a:main")
+
+        self.assertNotIn("wake_at", states.load_state())
+
+        self.spawn_restore.return_value = True
+        states.set_state("waiting", session="codex:session-b:main")
+        self.assertEqual(self.spawn_restore.call_count, 2)
+
 
 class SweepLockBudgetTests(StateFileTestCase):
     """set_state acquires the state lock twice (sweep, then transition).
@@ -714,6 +739,24 @@ class SignalBaselineGuardTests(StateFileTestCase):
 
         self.assertEqual(states.load_state()["baseline"],
                          FakeKeyboard().snapshot())
+
+    def test_baseline_mode_without_baseline_still_goes_dark(self):
+        # Discarding a polluted snapshot leaves baseline None. Under the
+        # default "baseline" restore mode there is then nothing to repaint,
+        # and skipping the keyboard entirely would leave the last signal
+        # lit forever — the restore must still darken it (#35 review).
+        self._set_waiting_with_snapshot({
+            "effect": 2, "speed": 170, "brightness": 255, "color": [21, 255],
+        })
+        self.assertIsNone(states.load_state()["baseline"])
+
+        states.restore(session="claude:session-a:main")
+
+        state = states.load_state()
+        self.assertIsNone(state["active"])
+        self.assertIn((states.via.VALUE_BRIGHTNESS, 0), FakeKeyboard.values)
+        self.assertIn(0, FakeKeyboard.settled)
+        self.assertEqual(FakeKeyboard.restored, [])  # nothing to repaint
 
     def test_one_field_off_a_signal_pattern_is_still_adopted(self):
         snap = {"effect": 2, "speed": 170, "brightness": 254,

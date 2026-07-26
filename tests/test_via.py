@@ -242,6 +242,35 @@ class SettleBrightnessTests(unittest.TestCase):
         kb.get_value = mock.Mock(side_effect=[OSError("no response"), [0]])
         self.assertTrue(via.Keyboard.settle_brightness(kb, 0, settle=0, hold=0))
 
+    def test_writes_stop_at_the_deadline_and_sleeps_are_clamped(self):
+        # A blocking SET burns two read timeouts, so the deadline must be
+        # checked right before each write and the inter-write sleep clamped
+        # to the remaining budget — otherwise an iteration entered just in
+        # time overshoots the advertised ceiling by most of a write plus a
+        # full settle (#36 review).
+        kb = self._kb()
+        now = [0.0]
+        start_times, sleeps = [], []
+
+        def fake_set(*_args):
+            start_times.append(now[0])
+            now[0] += 0.6  # blocking write
+
+        def fake_sleep(seconds):
+            sleeps.append(seconds)
+            now[0] += seconds
+
+        kb.set_value = fake_set
+        kb.get_value = mock.Mock(return_value=[123])  # never confirms
+        with mock.patch.object(via.time, "monotonic", lambda: now[0]), \
+                mock.patch.object(via.time, "sleep", fake_sleep):
+            self.assertFalse(via.Keyboard.settle_brightness(
+                kb, 0, settle=0.1, hold=0, budget=1.5))
+        self.assertTrue(all(t < 1.5 for t in start_times))
+        # Total elapsed: at most the budget plus one in-flight write; an
+        # unclamped final sleep would push past this.
+        self.assertLessEqual(now[0], 2.05)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -249,12 +249,19 @@ class Keyboard:
         False when it gave up (the caller logs that)."""
         deadline = time.monotonic() + budget
         hold_until = time.monotonic() + hold
-        while time.monotonic() < deadline:
+        while True:
+            # Check the deadline right before the write — a blocking SET can
+            # itself take two read timeouts, so an iteration entered "just in
+            # time" could otherwise overshoot the advertised budget by most
+            # of a write. One in-flight write may still exceed it; nothing
+            # further is started past the deadline (#36 review).
+            if time.monotonic() >= deadline:
+                break
             try:
                 self.set_value(VALUE_BRIGHTNESS, value)
             except OSError:
                 pass
-            time.sleep(settle)
+            time.sleep(min(settle, max(0.0, deadline - time.monotonic())))
             if time.monotonic() < hold_until:
                 continue  # rewrite across the revert window; don't trust reads
             remaining = deadline - time.monotonic()

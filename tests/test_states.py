@@ -16,6 +16,7 @@ class FakeKeyboard:
     applied = []
     restored = []
     values = []
+    settled: ClassVar[list] = []
 
     def __enter__(self):
         return self
@@ -41,6 +42,13 @@ class FakeKeyboard:
 
     def set_value(self, *values):
         self.values.append(values)
+
+    def set_color(self, hue, sat):
+        return True
+
+    def settle_brightness(self, value):
+        self.settled.append(value)
+        return True
 
 
 class StateFileTestCase(unittest.TestCase):
@@ -82,6 +90,7 @@ class StateFileTestCase(unittest.TestCase):
         FakeKeyboard.applied = []
         FakeKeyboard.restored = []
         FakeKeyboard.values = []
+        FakeKeyboard.settled = []
 
     def _age_owner(self, owner):
         state = states.load_state()
@@ -758,6 +767,66 @@ class SignalBaselineGuardTests(StateFileTestCase):
         self.assertEqual(FakeKeyboard.values,
                          [(states.via.VALUE_BRIGHTNESS, 0)])
         self.assertEqual(FakeKeyboard.restored, [])
+
+
+class RestoreBrightnessSettleTests(StateFileTestCase):
+    """Restore settles the final brightness with read-back (#34).
+
+    Measured on a K8 Pro: after a sequence that includes an effect change,
+    the firmware can ACK a lone brightness write and silently revert it —
+    three production repros ended restore('off') at brightness 255. Both
+    restore branches therefore route the final brightness through the
+    settle_brightness helper.
+    """
+
+    def _enter_waiting(self):
+        states.set_state("waiting", session="claude:session-a:main")
+
+    def test_off_restore_settles_brightness_to_zero(self):
+        self._enter_waiting()
+
+        with mock.patch.object(
+            states, "load_config", return_value={"restore": "off"}
+        ):
+            states.restore(session="claude:session-a:main")
+
+        self.assertEqual(FakeKeyboard.settled, [0])
+
+    def test_baseline_restore_settles_snapshot_brightness(self):
+        self._enter_waiting()
+
+        states.restore(session="claude:session-a:main")
+
+        self.assertEqual(FakeKeyboard.settled,
+                         [FakeKeyboard().snapshot()["brightness"]])
+
+    def test_unsettled_brightness_logs_and_does_not_raise(self):
+        self._enter_waiting()
+
+        with mock.patch.object(
+            FakeKeyboard, "settle_brightness", return_value=False,
+        ), mock.patch.object(
+            states, "load_config", return_value={"restore": "off"}
+        ):
+            states.restore(session="claude:session-a:main")  # must not raise
+
+        self.assertIsNone(states.load_state()["active"])
+        with open(states.LOG_FILE, encoding="utf-8") as f:
+            self.assertIn("brightness 0 not confirmed", f.read())
+
+    def test_unconfirmed_color_keeps_baseline_restore_dark(self):
+        # apply_snapshot returning False means the color never settled and
+        # the LEDs were left dark; raising brightness onto the wrong color
+        # would defeat that guard, so no settle may run.
+        self._enter_waiting()
+
+        with mock.patch.object(
+            FakeKeyboard, "apply_snapshot", return_value=False,
+        ):
+            states.restore(session="claude:session-a:main")
+
+        self.assertIsNone(states.load_state()["active"])
+        self.assertEqual(FakeKeyboard.settled, [])
 
 
 class LogRotationTests(unittest.TestCase):

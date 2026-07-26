@@ -153,5 +153,65 @@ class SetColorTests(unittest.TestCase):
         kb.get_value.assert_called_once_with(via.VALUE_COLOR, 2, tries=1)
 
 
+class SettleBrightnessTests(unittest.TestCase):
+    """settle_brightness writes-and-verifies until the value sticks (#34).
+
+    Measured on a K8 Pro: after a sequence that includes an effect change,
+    a lone brightness write can be ACKed yet silently reverted by the
+    firmware (a later read shows the pre-change value). The loop does not
+    depend on explaining that behavior — write-and-verify wins regardless.
+    """
+
+    @staticmethod
+    def _kb():
+        kb = via.Keyboard.__new__(via.Keyboard)
+        kb._reset_on_effect = True
+        return kb
+
+    def test_converges_when_first_writes_are_swallowed(self):
+        # Failure mode from #34: the firmware swallows the first N
+        # brightness writes, read-back keeps showing the old value.
+        kb = self._kb()
+        state = {"swallow": 2, "brightness": 255}
+
+        def set_value(value_id, *data):
+            if value_id != via.VALUE_BRIGHTNESS:
+                return
+            if state["swallow"]:
+                state["swallow"] -= 1  # ACKed but silently reverted
+            else:
+                state["brightness"] = data[0]
+
+        kb.set_value = set_value
+        kb.get_value = lambda value_id, length=1, tries=6: [state["brightness"]]
+        self.assertTrue(via.Keyboard.settle_brightness(kb, 0, settle=0))
+        self.assertEqual(state["brightness"], 0)
+
+    def test_gives_up_within_budget_without_raising(self):
+        kb = self._kb()
+        kb.set_value = mock.Mock()
+        kb.get_value = mock.Mock(return_value=[255])  # never sticks
+        self.assertFalse(
+            via.Keyboard.settle_brightness(kb, 0, settle=0, budget=0.02)
+        )
+
+    def test_confirmed_first_read_stops_the_loop(self):
+        # Happy path: the first write sticks, so the first confirmed read
+        # must terminate the loop immediately.
+        kb = self._kb()
+        kb.set_value = mock.Mock()
+        kb.get_value = mock.Mock(return_value=[0])
+        self.assertTrue(via.Keyboard.settle_brightness(kb, 0, settle=0))
+        kb.get_value.assert_called_once()
+
+    def test_errors_count_as_miss_not_raised(self):
+        # Same contract as set_color: a hook must exit cleanly, so
+        # write/read errors are a miss, never an exception.
+        kb = self._kb()
+        kb.set_value = mock.Mock(side_effect=OSError("write failed"))
+        kb.get_value = mock.Mock(side_effect=[OSError("no response"), [0]])
+        self.assertTrue(via.Keyboard.settle_brightness(kb, 0, settle=0))
+
+
 if __name__ == "__main__":
     unittest.main()

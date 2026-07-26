@@ -226,6 +226,37 @@ class Keyboard:
                 pass
         return False
 
+    # Some firmware silently reverts a brightness write that follows an
+    # effect change: the SET is ACKed, but a later read shows the pre-change
+    # value (#34, measured on a K8 Pro — restore('off') ended at 255 three
+    # times, while a bare 255->0 write stuck 3/3). The cause is not fully
+    # explained; write-and-verify wins regardless.
+    BRIGHTNESS_SETTLE = 0.1  # read-back cadence; the revert lands late
+
+    def settle_brightness(self, value, settle=BRIGHTNESS_SETTLE,
+                          budget=COLOR_BUDGET):
+        """Write brightness until a read-back confirms it stuck, within
+        `budget` seconds. Same contract as set_color: never raises (errors
+        count as a miss), read tries are capped by the remaining budget,
+        and it returns False when it gave up (the caller logs that)."""
+        deadline = time.monotonic() + budget
+        while time.monotonic() < deadline:
+            try:
+                self.set_value(VALUE_BRIGHTNESS, value)
+            except OSError:
+                pass
+            time.sleep(settle)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            tries = max(1, min(6, int(remaining / self._READ_TIMEOUT)))
+            try:
+                if self.get_value(VALUE_BRIGHTNESS, tries=tries) == [value]:
+                    return True
+            except OSError:
+                pass
+        return False
+
     def apply(self, effect=None, hue=None, sat=255, speed=None, brightness=None):
         """Apply a lighting pattern. Returns whether the color was confirmed
         (True when there is no color to set, or the device needs no workaround).

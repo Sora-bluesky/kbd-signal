@@ -619,9 +619,21 @@ def _restore_locked(generation, session, owner_prefix=None, owner_aliases=(),
                     # verified write; the effect change resets color first
                     if not kb.set_color(*baseline["color"]):
                         log("restore: color not confirmed after retries")
+                # The firmware can ACK a brightness write after an effect
+                # change and silently revert it (#34: restore('off')
+                # measured ending at 255) — settle with read-back so "off"
+                # reliably goes dark.
+                if not kb.settle_brightness(0):
+                    log("restore: brightness 0 not confirmed after retries")
             elif baseline:
                 if not kb.apply_snapshot(baseline):
+                    # Color never settled: the LEDs were left dark, and
+                    # raising brightness onto the wrong color would defeat
+                    # that guard — no brightness settle either.
                     log("restore: color not confirmed after retries")
+                elif not kb.settle_brightness(baseline["brightness"]):
+                    # Same #34 revert can undo the baseline brightness.
+                    log("restore: brightness not confirmed after retries")
     except (via.DeviceNotFound, OSError) as e:
         # Keyboard gone: RAM-only changes vanish on power cycle anyway.
         log(f"restore: device unavailable ({e})")

@@ -538,6 +538,28 @@ class WaitingTTLTests(StateFileTestCase):
         self.spawn_restore.assert_called_once()
 
 
+class SweepLockBudgetTests(StateFileTestCase):
+    """set_state acquires the state lock twice (sweep, then transition).
+
+    Two full 3 s acquisitions could burn ~6 s under contention, past the
+    documented 5 s hook deadline. The best-effort sweep phase must ask for
+    less so the worst case stays below it (#33).
+    """
+
+    def test_sweep_phase_requests_a_shorter_lock_timeout(self):
+        timeouts = []
+        real_lock = states._state_lock
+
+        def recording_lock(timeout=3.0):
+            timeouts.append(timeout)
+            return real_lock(timeout=timeout)
+
+        with mock.patch.object(states, "_state_lock", recording_lock):
+            states.set_state("waiting", session="claude:session-a:main")
+
+        self.assertEqual(timeouts, [1.0, 3.0])
+
+
 class SignalBaselineGuardTests(StateFileTestCase):
     """Snapshots that look like a leftover signal are never adopted (#32).
 

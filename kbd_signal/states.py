@@ -363,8 +363,13 @@ def set_state(name, session=None, owner_prefix=None, owner_aliases=()):
     # device): a main-session Stop can be the final lifecycle event, and it
     # must clean up stale waiting state no matter what happens after —
     # otherwise an abandoned approval strands the orange signal (#31).
+    # The sweep gets a shorter lock budget than the transition: set_state
+    # acquires the lock twice, and two full 3 s waits under contention
+    # would burn ~6 s — past the 5 s hook deadline. 1 s + 3 s keeps the
+    # worst case around 4 s, and a sweep that loses the lock just runs on
+    # the next event anyway.
     try:
-        with _state_lock():
+        with _state_lock(timeout=1.0):
             state = load_state()
             if _expire_stale_owners(state):
                 # No generation bump: expiry is bookkeeping, not a signal.

@@ -4,7 +4,10 @@ State file (%LOCALAPPDATA%/kbd-signal/state.json):
   {"active": "waiting"|"done"|"error"|null,
    "generation": int,
    "baseline": {...snapshot...},
-   "owners": ["product:session:agent", ...]}
+   "owners": ["product:session:agent", ...],
+   "owner_seen": {"product:session:agent": {"wall": epoch_seconds,
+                                            "mono": monotonic_seconds}, ...},
+   "owner_seen_gen": int}
 
 The baseline is captured once when entering a signal state and kept until
 restore, so chained notifications (waiting -> done) still restore the
@@ -28,6 +31,14 @@ ACTIVE_FLAG = os.path.join(STATE_DIR, "active.flag")
 LOG_FILE = os.path.join(STATE_DIR, "kbd-signal.log")
 
 DONE_RESTORE_AFTER = 5  # seconds
+
+# Waiting owners whose approval has been pending longer than this expire
+# automatically: an approval left unanswered for over an hour has lost its
+# value as a signal, and an abandoned session would otherwise keep the
+# keyboard orange until a manual restore (measured 1h20m stuck on
+# 2026-07-26). A constant, not a config knob — same call as the log cap
+# (#26/#28).
+WAITING_TTL = 3600  # seconds
 
 # Cap the log by rotating to a single `.1` generation once it grows past this,
 # so total on-disk usage stays bounded at ~2x instead of growing forever
@@ -161,6 +172,112 @@ def _owners(state):
     return [owner] if owner else []
 
 
+def _sync_owner_seen(state):
+    """Prune owner_seen down to the current owners list.
+
+    Called wherever the owners list is rewritten, so a released owner never
+    leaves a dangling timestamp behind."""
+    seen = state.get("owner_seen") or {}
+    state["owner_seen"] = {
+        owner: seen[owner]
+        for owner in (state.get("owners") or [])
+        if owner in seen
+    }
+
+
+def _stamp_owner_seen(state):
+    """Mark owner_seen as in step with the generation this save writes.
+
+    The expiry sweep only trusts the TTL clocks while the stamp matches:
+    a save that moved the generation without restamping came from a
+    TTL-unaware writer (v1.0.1 or older), which can re-add an owner while
+    its old timestamp survives the round-trip."""
+    state["owner_seen_gen"] = state["generation"]
+
+
+def _valid_seen_entry(entry):
+    """A usable owner_seen entry: wall and monotonic halves, both numbers."""
+    return (isinstance(entry, dict)
+            and isinstance(entry.get("wall"), (int, float))
+            and isinstance(entry.get("mono"), (int, float)))
+
+
+def _expire_stale_owners(state, now=None, now_mono=None):
+    """Drop waiting owners whose approval has been pending past WAITING_TTL.
+
+    Expiry must never kill a live approval, so the clocks are guarded twice:
+
+    - If owner_seen_gen does not match the generation, a TTL-unaware writer
+      rewrote the state since our last save (see _stamp_owner_seen); its
+      timestamps cannot be trusted, so every clock restarts instead — the
+      same lazy migration idiom as the v0.2.0 raw-session-id aliases, which
+      also covers owners with no entry at all (older state files).
+    - An owner expires only when both its wall-clock age and its monotonic
+      age reach the TTL: a wall clock stepped forward cannot expire a
+      seconds-old approval (its monotonic age stays small), and a clock that
+      ran backward or a reboot resets the affected half instead of
+      producing a bogus age.
+
+    Returns True when the state dict was modified and needs saving."""
+    if state["active"] != "waiting":
+        return False
+    owners = _owners(state)
+    if not owners:
+        return False
+    if now is None:
+        now = time.time()
+    if now_mono is None:
+        now_mono = time.monotonic()
+    if state.get("owner_seen_gen") != state["generation"]:
+        log(f"restarted TTL clocks for {len(owners)} owner(s) "
+            f"(state rewritten by a TTL-unaware writer)")
+        state["owners"] = owners
+        state.pop("owner", None)
+        state["owner_seen"] = {
+            owner: {"wall": now, "mono": now_mono} for owner in owners
+        }
+        _stamp_owner_seen(state)
+        return True
+    seen = dict(state.get("owner_seen") or {})
+    changed = False
+    remaining = []
+    for owner in owners:
+        entry = seen.get(owner)
+        if not _valid_seen_entry(entry):
+            # Legacy or corrupt entry: start its clock, don't expire.
+            seen[owner] = {"wall": now, "mono": now_mono}
+            changed = True
+            remaining.append(owner)
+            continue
+        if entry["wall"] > now or entry["mono"] > now_mono:
+            # The wall clock stepped backward, or the machine rebooted (the
+            # monotonic clock restarted): reset the affected half rather
+            # than trust a clock that visibly moved under us.
+            entry = {"wall": min(entry["wall"], now),
+                     "mono": min(entry["mono"], now_mono)}
+            seen[owner] = entry
+            changed = True
+        if (now - entry["wall"] >= WAITING_TTL
+                and now_mono - entry["mono"] >= WAITING_TTL):
+            log(f"expired waiting owner (pending {int(now - entry['wall'])}s)")
+            changed = True
+        else:
+            remaining.append(owner)
+    if changed:
+        state["owners"] = remaining
+        state.pop("owner", None)
+        state["owner_seen"] = {owner: seen[owner] for owner in remaining}
+        _stamp_owner_seen(state)
+        if not remaining:
+            # The sweep just orphaned the waiting signal: no owner is left
+            # to release it. Record that durably — this very event can still
+            # die before restoring (corrupt config, absent device), and a
+            # later superseded restore must know it may bypass its
+            # generation guard. Cleared on the next state transition.
+            state["orphaned"] = True
+    return changed
+
+
 def _owner_matches(owner, session=None, owner_prefix=None, owner_aliases=()):
     if session is not None and owner == session:
         return True
@@ -199,12 +316,29 @@ def _release_from_waiting(state, name, session, owner_prefix=None,
         return "blocked"
     state["owners"] = remaining
     state.pop("owner", None)
+    _sync_owner_seen(state)
     return "held" if remaining else "clear"
 
 
 def set_state(name, session=None, owner_prefix=None, owner_aliases=()):
     """Enter a signal state. Silently no-ops if the keyboard is absent."""
+    # Sweep expired owners first, under a short lock of their own, before
+    # anything that can fail or stall (a corrupt config, a missing or slow
+    # device): a main-session Stop can be the final lifecycle event, and it
+    # must clean up stale waiting state no matter what happens after —
+    # otherwise an abandoned approval strands the orange signal (#31).
+    try:
+        with _state_lock():
+            state = load_state()
+            if _expire_stale_owners(state):
+                # No generation bump: expiry is bookkeeping, not a signal.
+                save_state(state)
+    except LockTimeout as e:
+        log(f"set {name}: {e} (expiry sweep), continuing")
     pattern = patterns()[name]
+    # Open the device OUTSIDE the lock: enumerate/open/probe have no time
+    # bound, and holding the 3s lock across them would make every
+    # concurrent hook time out and drop its signal on a slow device.
     try:
         kb = via.Keyboard()
     except (via.DeviceNotFound, OSError) as e:
@@ -222,42 +356,68 @@ def set_state(name, session=None, owner_prefix=None, owner_aliases=()):
 def _set_state_locked(kb, name, session, pattern, owner_prefix=None,
                       owner_aliases=()):
     with kb, _state_lock():
+        # Re-read and re-sweep under the transition lock: the state may
+        # have moved while the device was opening, and the sweep is cheap
+        # and idempotent.
         state = load_state()
-        if state["active"] == "error" and name != "error":
-            log(f"set {name}: blocked by sticky error")
-            return True  # error is manual and sticky until restore
-        verdict = _release_from_waiting(
-            state, name, session, owner_prefix, owner_aliases
-        )
-        if verdict == "blocked":
-            log(f"set {name}: blocked by {len(_owners(state))} pending owner(s)")
-            return True
-        if verdict == "held":
-            state["generation"] += 1
+        if _expire_stale_owners(state):
+            # Persist without a generation bump so the expiry sticks even
+            # when a branch below returns early (blocked / sticky error).
             save_state(state)
-            log(f"set {name}: held for {len(state['owners'])} pending owner(s)")
-            return True
-        if state["active"] is None:
-            try:
-                state["baseline"] = kb.snapshot()
-            except IOError as e:
-                log(f"set {name}: snapshot failed ({e})")
-                return False
-        if name == "waiting":
-            aliases = set(owner_aliases)
-            owners = [owner for owner in _owners(state)
-                      if owner not in aliases]
-            if session is not None and session not in owners:
-                owners.append(session)
-            state["owners"] = owners
-        else:
-            state["owners"] = []
-        state.pop("owner", None)
-        state["active"] = name
+        return _apply_state(kb, state, name, session, pattern,
+                            owner_prefix, owner_aliases)
+
+
+def _apply_state(kb, state, name, session, pattern, owner_prefix,
+                 owner_aliases):
+    """Run the guarded transition. Caller holds the state lock and the
+    open keyboard, and has already swept (and persisted) expired owners."""
+    if state["active"] == "error" and name != "error":
+        log(f"set {name}: blocked by sticky error")
+        return True  # error is manual and sticky until restore
+    verdict = _release_from_waiting(
+        state, name, session, owner_prefix, owner_aliases
+    )
+    if verdict == "blocked":
+        log(f"set {name}: blocked by {len(_owners(state))} pending owner(s)")
+        return True
+    if verdict == "held":
         state["generation"] += 1
+        _stamp_owner_seen(state)
         save_state(state)
-        if not kb.apply(**pattern):
-            log(f"set {name}: color not confirmed after retries")
+        log(f"set {name}: held for {len(state['owners'])} pending owner(s)")
+        return True
+    if state["active"] is None:
+        try:
+            state["baseline"] = kb.snapshot()
+        except IOError as e:
+            log(f"set {name}: snapshot failed ({e})")
+            return False
+    if name == "waiting":
+        aliases = set(owner_aliases)
+        owners = [owner for owner in _owners(state)
+                  if owner not in aliases]
+        if session is not None and session not in owners:
+            owners.append(session)
+        state["owners"] = owners
+        if session is not None:
+            # A fresh PermissionRequest restarts this owner's TTL clock.
+            state.setdefault("owner_seen", {})[session] = {
+                "wall": time.time(), "mono": time.monotonic()}
+    else:
+        state["owners"] = []
+    state.pop("owner", None)
+    _sync_owner_seen(state)
+    # A real transition supersedes any recorded orphaning: waiting gets a
+    # live owner again, and done/error no longer need the bypass — leaving
+    # the flag would let a stale delayed restore kill a fresh signal.
+    state.pop("orphaned", None)
+    state["active"] = name
+    state["generation"] += 1
+    _stamp_owner_seen(state)
+    save_state(state)
+    if not kb.apply(**pattern):
+        log(f"set {name}: color not confirmed after retries")
     log(f"set {name} (gen {state['generation']}, "
         f"owner_count {len(state['owners'])})")
     if name == "done":
@@ -299,9 +459,20 @@ def release_waiting(session=None, owner_prefix=None, owner_aliases=()):
 def _restore_locked(generation, session, owner_prefix=None, owner_aliases=(),
                     waiting_only=False):
     state = load_state()
+    expired = _expire_stale_owners(state)
+    if expired:
+        # Persist without a generation bump so the expiry sticks even when
+        # a guard below skips the restore.
+        save_state(state)
     if state["active"] is None:
         return True
-    if generation is not None and generation != state["generation"]:
+    # When the sweep above dropped the last owner, waiting is over and this
+    # event is the only hook left that can turn the lights off — an
+    # abandoned session sends no further events, so even a superseded
+    # delayed restore must fall through to the actual restore.
+    orphaned = not _owners(state) and (expired or state.get("orphaned"))
+    if (generation is not None and generation != state["generation"]
+            and not orphaned):
         return True  # superseded by a newer signal
     if waiting_only and state["active"] != "waiting":
         return True
@@ -321,6 +492,8 @@ def _restore_locked(generation, session, owner_prefix=None, owner_aliases=(),
             if remaining:  # other sessions still awaiting approval
                 state["owners"] = remaining
                 state.pop("owner", None)
+                _sync_owner_seen(state)
+                _stamp_owner_seen(state)
                 save_state(state)
                 log(f"restore: released owner, {len(remaining)} still pending")
                 return True

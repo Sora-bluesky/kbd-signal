@@ -2,6 +2,7 @@ import json
 import os
 import tempfile
 import threading
+import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
@@ -41,7 +42,9 @@ class FakeKeyboard:
         self.values.append(values)
 
 
-class StateOwnershipTests(unittest.TestCase):
+class StateFileTestCase(unittest.TestCase):
+    """Shared fixture: state files in a temp dir, VIA replaced by FakeKeyboard."""
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
@@ -79,6 +82,8 @@ class StateOwnershipTests(unittest.TestCase):
         FakeKeyboard.restored = []
         FakeKeyboard.values = []
 
+
+class StateOwnershipTests(StateFileTestCase):
     def test_other_product_completion_cannot_clear_waiting(self):
         claude = "claude:session-a:main"
         codex = "codex:session-b:main"
@@ -208,6 +213,328 @@ class StateOwnershipTests(unittest.TestCase):
         with open(states.STATE_FILE, encoding="utf-8") as f:
             state = json.load(f)
         self.assertEqual(state["active"], "waiting")
+
+
+class WaitingTTLTests(StateFileTestCase):
+    """Stale waiting owners expire after WAITING_TTL (#31).
+
+    Timestamps are made stale by rewriting owner_seen in the saved state
+    (both the wall and the monotonic half), so no test ever sleeps or
+    mocks the clock.
+    """
+
+    def _age_owner(self, owner):
+        state = states.load_state()
+        state["owner_seen"][owner] = {
+            "wall": time.time() - states.WAITING_TTL - 1,
+            "mono": time.monotonic() - states.WAITING_TTL - 1,
+        }
+        states.save_state(state)
+
+    def test_stale_last_owner_expires_and_restore_runs(self):
+        stale = "claude:session-a:main"
+        states.set_state("waiting", session=stale)
+        self._age_owner(stale)
+
+        # Another session's turn-end event triggers the expiry sweep.
+        states.release_waiting(session="codex:session-b:main")
+
+        state = states.load_state()
+        self.assertIsNone(state["active"])
+        self.assertEqual(FakeKeyboard.restored, [FakeKeyboard().snapshot()])
+
+    def test_fresh_owner_is_not_expired(self):
+        fresh = "claude:session-a:main"
+        states.set_state("waiting", session=fresh)
+
+        states.release_waiting(session="codex:session-b:main")
+
+        state = states.load_state()
+        self.assertEqual(state["active"], "waiting")
+        self.assertEqual(state["owners"], [fresh])
+        self.assertEqual(FakeKeyboard.restored, [])
+
+    def test_legacy_state_without_owner_seen_is_touched_not_expired(self):
+        owner = "claude:session-a:main"
+        states.save_state({
+            "active": "waiting",
+            "generation": 3,
+            "baseline": FakeKeyboard().snapshot(),
+            "owners": [owner],
+        })
+
+        states.release_waiting(session="codex:session-b:main")
+
+        state = states.load_state()
+        self.assertEqual(state["active"], "waiting")
+        self.assertEqual(state["owners"], [owner])
+        self.assertIn(owner, state["owner_seen"])
+
+    def test_only_the_stale_owner_drops_when_mixed_with_fresh(self):
+        stale = "claude:session-a:main"
+        fresh = "codex:session-b:main"
+        states.set_state("waiting", session=stale)
+        states.set_state("waiting", session=fresh)
+        self._age_owner(stale)
+
+        states.release_waiting(session="gemini:session-c:main")
+
+        state = states.load_state()
+        self.assertEqual(state["active"], "waiting")
+        self.assertEqual(state["owners"], [fresh])
+        self.assertEqual(FakeKeyboard.restored, [])
+
+    def test_reentering_waiting_refreshes_owner_seen(self):
+        owner = "claude:session-a:main"
+        states.set_state("waiting", session=owner)
+        # Backdate but keep within the TTL so the refresh is observable.
+        backdated = time.time() - states.WAITING_TTL + 600
+        state = states.load_state()
+        state["owner_seen"][owner]["wall"] = backdated
+        states.save_state(state)
+
+        states.set_state("waiting", session=owner)
+
+        state = states.load_state()
+        self.assertEqual(state["owners"], [owner])
+        self.assertGreater(state["owner_seen"][owner]["wall"], backdated)
+
+    def test_stale_generation_restore_still_clears_orphaned_waiting(self):
+        stale = "claude:session-a:main"
+        states.set_state("waiting", session=stale)
+        self._age_owner(stale)
+        generation = states.load_state()["generation"]
+
+        # A superseded delayed restore still runs the expiry sweep. Once the
+        # sweep dropped the last owner there is no later hook, so the restore
+        # must run anyway or the orange signal is stranded.
+        states.restore(generation=generation - 1)
+
+        state = states.load_state()
+        self.assertIsNone(state["active"])
+        self.assertEqual(FakeKeyboard.restored, [FakeKeyboard().snapshot()])
+
+    def test_stale_generation_restore_keeps_fresh_waiting(self):
+        fresh = "claude:session-a:main"
+        states.set_state("waiting", session=fresh)
+        generation = states.load_state()["generation"]
+
+        states.restore(generation=generation - 1)
+
+        state = states.load_state()
+        self.assertEqual(state["active"], "waiting")
+        self.assertEqual(state["owners"], [fresh])
+        self.assertEqual(FakeKeyboard.restored, [])
+
+    def test_partial_expiry_under_stale_generation_keeps_waiting(self):
+        stale = "claude:session-a:main"
+        fresh = "codex:session-b:main"
+        states.set_state("waiting", session=stale)
+        states.set_state("waiting", session=fresh)
+        self._age_owner(stale)
+        generation = states.load_state()["generation"]
+
+        states.restore(generation=generation - 1)
+
+        # The stale owner expired, but another owner still holds the signal:
+        # the superseded restore stays superseded.
+        state = states.load_state()
+        self.assertEqual(state["active"], "waiting")
+        self.assertEqual(state["owners"], [fresh])
+        self.assertEqual(FakeKeyboard.restored, [])
+
+    def test_owner_readded_by_ttl_unaware_writer_is_not_expired(self):
+        owner = "claude:session-a:main"
+        states.set_state("waiting", session=owner)
+        self._age_owner(owner)
+        # Simulate v1.0.1 releasing and re-adding the owner: it rewrites
+        # owners and bumps the generation, but round-trips owner_seen
+        # untouched — the stale timestamp now describes a fresh approval.
+        state = states.load_state()
+        state["generation"] += 1
+        states.save_state(state)
+
+        states.release_waiting(session="codex:session-b:main")
+
+        state = states.load_state()
+        self.assertEqual(state["active"], "waiting")
+        self.assertEqual(state["owners"], [owner])
+        self.assertEqual(FakeKeyboard.restored, [])
+        # The sweep restarted the owner's clock instead of trusting it.
+        self.assertLess(
+            time.time() - state["owner_seen"][owner]["wall"],
+            states.WAITING_TTL,
+        )
+
+    def test_forward_clock_step_does_not_expire_fresh_owner(self):
+        owner = "claude:session-a:main"
+        states.set_state("waiting", session=owner)
+        # Simulate a clock correction: the wall timestamp claims the
+        # approval is over an hour old, but the monotonic clock shows it is
+        # seconds old.
+        state = states.load_state()
+        state["owner_seen"][owner]["wall"] = (
+            time.time() - states.WAITING_TTL - 1
+        )
+        states.save_state(state)
+
+        states.release_waiting(session="codex:session-b:main")
+
+        state = states.load_state()
+        self.assertEqual(state["active"], "waiting")
+        self.assertEqual(state["owners"], [owner])
+        self.assertEqual(FakeKeyboard.restored, [])
+
+    def test_reboot_restarts_monotonic_clock_instead_of_expiring(self):
+        owner = "claude:session-a:main"
+        states.set_state("waiting", session=owner)
+        # After a reboot the monotonic clock restarts, so a stored value can
+        # exceed the current one. The sweep must reset that half, not expire.
+        state = states.load_state()
+        state["owner_seen"][owner] = {
+            "wall": time.time() - states.WAITING_TTL - 1,
+            "mono": time.monotonic() + 10_000_000,
+        }
+        states.save_state(state)
+
+        states.release_waiting(session="codex:session-b:main")
+
+        state = states.load_state()
+        self.assertEqual(state["active"], "waiting")
+        self.assertEqual(state["owners"], [owner])
+        self.assertLessEqual(
+            state["owner_seen"][owner]["mono"], time.monotonic()
+        )
+
+    def test_device_failure_does_not_strand_stale_owner(self):
+        stale = "claude:session-a:main"
+        states.set_state("waiting", session=stale)
+        self._age_owner(stale)
+
+        # A main-session Stop can be the final lifecycle event; if the HID
+        # open fails transiently, the sweep must already be persisted or the
+        # stale owner survives indefinitely — the exact bug of #31.
+        with mock.patch.object(
+            states.via, "Keyboard",
+            side_effect=states.via.DeviceNotFound("transient"),
+        ):
+            result = states.set_state(
+                "done",
+                session="codex:session-b:main",
+                owner_prefix="codex:session-b:",
+            )
+
+        self.assertFalse(result)
+        state = states.load_state()
+        self.assertEqual(state["owners"], [])
+        self.assertEqual(FakeKeyboard.restored, [])
+        # The next event with a working device fully clears the signal.
+        states.release_waiting(session="codex:session-b:main")
+        self.assertIsNone(states.load_state()["active"])
+        self.assertEqual(FakeKeyboard.restored, [FakeKeyboard().snapshot()])
+
+    def test_corrupt_config_still_sweeps_stale_owner(self):
+        stale = "claude:session-a:main"
+        states.set_state("waiting", session=stale)
+        self._age_owner(stale)
+
+        # patterns() reads the config and can raise on a corrupt file. The
+        # sweep runs before it under its own short lock, so even then a
+        # stale owner cannot survive the event.
+        with mock.patch.object(
+            states, "patterns", side_effect=KeyError("effects"),
+        ), self.assertRaises(KeyError):
+            states.set_state(
+                "done",
+                session="codex:session-b:main",
+                owner_prefix="codex:session-b:",
+            )
+
+        state = states.load_state()
+        self.assertEqual(state["owners"], [])
+        self.assertEqual(state["active"], "waiting")  # cleared on next event
+
+    def test_orphaned_by_failed_event_recovers_via_stale_restore(self):
+        # The sweep drops the last owner, then the same event dies before
+        # it can restore (corrupt config). The orphaning is recorded, so
+        # even a later restore with a mismatched generation — possibly the
+        # only event left — bypasses its guard and turns the lights off.
+        stale = "claude:session-a:main"
+        states.set_state("waiting", session=stale)
+        self._age_owner(stale)
+        generation = states.load_state()["generation"]
+
+        with mock.patch.object(
+            states, "patterns", side_effect=KeyError("effects"),
+        ), self.assertRaises(KeyError):
+            states.set_state("done", session="codex:session-b:main",
+                             owner_prefix="codex:session-b:")
+
+        states.restore(generation=generation - 1)
+
+        state = states.load_state()
+        self.assertIsNone(state["active"])
+        self.assertEqual(FakeKeyboard.restored, [FakeKeyboard().snapshot()])
+
+    def test_orphaned_after_device_failure_recovers_via_stale_restore(self):
+        # Same recovery, with the event dying at the device-open step.
+        stale = "claude:session-a:main"
+        states.set_state("waiting", session=stale)
+        self._age_owner(stale)
+        generation = states.load_state()["generation"]
+
+        with mock.patch.object(
+            states.via, "Keyboard",
+            side_effect=states.via.DeviceNotFound("transient"),
+        ):
+            states.set_state("done", session="codex:session-b:main",
+                             owner_prefix="codex:session-b:")
+
+        states.restore(generation=generation - 1)
+
+        self.assertIsNone(states.load_state()["active"])
+        self.assertEqual(FakeKeyboard.restored, [FakeKeyboard().snapshot()])
+
+    def test_fresh_waiting_after_orphaning_is_not_killed_by_stale_restore(self):
+        # A real transition clears the recorded orphaning: once a fresh
+        # approval holds the signal again, a superseded delayed restore
+        # must stay superseded.
+        stale = "claude:session-a:main"
+        states.set_state("waiting", session=stale)
+        self._age_owner(stale)
+        with mock.patch.object(
+            states.via, "Keyboard",
+            side_effect=states.via.DeviceNotFound("transient"),
+        ):
+            states.set_state("done", session="codex:session-b:main",
+                             owner_prefix="codex:session-b:")
+
+        fresh = "codex:session-c:main"
+        states.set_state("waiting", session=fresh)
+        generation = states.load_state()["generation"]
+
+        states.restore(generation=generation - 1)
+
+        state = states.load_state()
+        self.assertEqual(state["active"], "waiting")
+        self.assertEqual(state["owners"], [fresh])
+        self.assertEqual(FakeKeyboard.restored, [])
+
+    def test_done_is_unblocked_after_the_blocker_expires(self):
+        blocker = "claude:session-a:main"
+        states.set_state("waiting", session=blocker)
+        self._age_owner(blocker)
+
+        states.set_state(
+            "done",
+            session="codex:session-b:main",
+            owner_prefix="codex:session-b:",
+        )
+
+        state = states.load_state()
+        self.assertEqual(state["active"], "done")
+        self.assertEqual(state["owners"], [])
+        self.spawn_restore.assert_called_once()
 
 
 class LogRotationTests(unittest.TestCase):

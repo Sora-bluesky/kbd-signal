@@ -226,6 +226,55 @@ class Keyboard:
                 pass
         return False
 
+    # Some firmware silently reverts a brightness write that follows an
+    # effect change: the SET is ACKed, but a later read shows the pre-change
+    # value (#34, measured on a K8 Pro — restore('off') ended at 255 three
+    # times, while a bare 255->0 write stuck 3/3). The cause is not fully
+    # explained; write-and-verify wins regardless.
+    BRIGHTNESS_SETTLE = 0.1  # rewrite/read-back cadence
+    BRIGHTNESS_HOLD = 0.4    # reverts measured as late as ~300 ms (#34)
+
+    def settle_brightness(self, value, settle=BRIGHTNESS_SETTLE,
+                          hold=BRIGHTNESS_HOLD, budget=COLOR_BUDGET):
+        """Write brightness until a read-back confirms it stuck, within
+        `budget` seconds. A read inside the revert window is not proof:
+        the firmware can confirm the new value at ~100 ms and still snap
+        it back at ~150 ms, with reverts measured as late as ~300 ms
+        (#34) — so for the first `hold` seconds the loop only rewrites,
+        and confirmations count solely after the window has passed. The
+        hold is unconditional (not gated on reset_on_effect) because the
+        board it was measured on ships with the quirk flag off. Same
+        contract as set_color: never raises (errors count as a miss),
+        read tries are capped by the remaining budget, and it returns
+        False when it gave up (the caller logs that)."""
+        deadline = time.monotonic() + budget
+        hold_until = time.monotonic() + hold
+        while True:
+            # Check the deadline right before the write — a blocking SET can
+            # itself take two read timeouts, so an iteration entered "just in
+            # time" could otherwise overshoot the advertised budget by most
+            # of a write. One in-flight write may still exceed it; nothing
+            # further is started past the deadline (#36 review).
+            if time.monotonic() >= deadline:
+                break
+            try:
+                self.set_value(VALUE_BRIGHTNESS, value)
+            except OSError:
+                pass
+            time.sleep(min(settle, max(0.0, deadline - time.monotonic())))
+            if time.monotonic() < hold_until:
+                continue  # rewrite across the revert window; don't trust reads
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            tries = max(1, min(6, int(remaining / self._READ_TIMEOUT)))
+            try:
+                if self.get_value(VALUE_BRIGHTNESS, tries=tries) == [value]:
+                    return True
+            except OSError:
+                pass
+        return False
+
     def apply(self, effect=None, hue=None, sat=255, speed=None, brightness=None):
         """Apply a lighting pattern. Returns whether the color was confirmed
         (True when there is no color to set, or the device needs no workaround).

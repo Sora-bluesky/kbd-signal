@@ -16,6 +16,7 @@ class FakeKeyboard:
     applied = []
     restored = []
     values = []
+    settled: ClassVar[list] = []
 
     def __enter__(self):
         return self
@@ -41,6 +42,13 @@ class FakeKeyboard:
 
     def set_value(self, *values):
         self.values.append(values)
+
+    def set_color(self, hue, sat):
+        return True
+
+    def settle_brightness(self, value):
+        self.settled.append(value)
+        return True
 
 
 class StateFileTestCase(unittest.TestCase):
@@ -82,6 +90,15 @@ class StateFileTestCase(unittest.TestCase):
         FakeKeyboard.applied = []
         FakeKeyboard.restored = []
         FakeKeyboard.values = []
+        FakeKeyboard.settled = []
+
+    def _age_owner(self, owner):
+        state = states.load_state()
+        state["owner_seen"][owner] = {
+            "wall": time.time() - states.WAITING_TTL - 1,
+            "mono": time.monotonic() - states.WAITING_TTL - 1,
+        }
+        states.save_state(state)
 
 
 class StateOwnershipTests(StateFileTestCase):
@@ -97,7 +114,12 @@ class StateOwnershipTests(StateFileTestCase):
         state = states.load_state()
         self.assertEqual(state["active"], "waiting")
         self.assertEqual(state["owners"], [claude])
-        self.spawn_restore.assert_not_called()
+        # No done-restore was scheduled (the only spawn so far is the
+        # waiting transition's TTL wake-up).
+        self.assertNotIn(
+            states.DONE_RESTORE_AFTER,
+            [c.args[0] for c in self.spawn_restore.call_args_list],
+        )
 
         states.set_state(
             "done", session=claude, owner_prefix="claude:session-a:"
@@ -105,7 +127,8 @@ class StateOwnershipTests(StateFileTestCase):
         state = states.load_state()
         self.assertEqual(state["active"], "done")
         self.assertEqual(state["owners"], [])
-        self.spawn_restore.assert_called_once()
+        self.assertEqual(self.spawn_restore.call_args.args[0],
+                         states.DONE_RESTORE_AFTER)
 
     def test_non_owner_completion_is_blocked(self):
         states.set_state("waiting", session="claude:session-a:main")
@@ -223,14 +246,6 @@ class WaitingTTLTests(StateFileTestCase):
     (both the wall and the monotonic half), so no test ever sleeps or
     mocks the clock.
     """
-
-    def _age_owner(self, owner):
-        state = states.load_state()
-        state["owner_seen"][owner] = {
-            "wall": time.time() - states.WAITING_TTL - 1,
-            "mono": time.monotonic() - states.WAITING_TTL - 1,
-        }
-        states.save_state(state)
 
     def test_stale_last_owner_expires_and_restore_runs(self):
         stale = "claude:session-a:main"
@@ -535,7 +550,157 @@ class WaitingTTLTests(StateFileTestCase):
         state = states.load_state()
         self.assertEqual(state["active"], "done")
         self.assertEqual(state["owners"], [])
-        self.spawn_restore.assert_called_once()
+        # The done-restore was scheduled (waiting's TTL wake-up aside).
+        self.assertEqual(self.spawn_restore.call_args.args[0],
+                         states.DONE_RESTORE_AFTER)
+
+
+class TTLWakeUpTests(StateFileTestCase):
+    """Entering waiting schedules its own TTL wake-up (#31, #33).
+
+    The expiry sweep only runs when some later hook fires; a lone session
+    that dies at its PermissionRequest never sends one, so the orange
+    stayed until an unrelated event (the 1h20m incident). The waiting
+    transition therefore spawns a delayed restore of its own — while
+    keeping at most ~one such hour-long sleeper pending, because
+    PermissionRequest fires constantly.
+    """
+
+    def test_entering_waiting_schedules_the_ttl_wake_up(self):
+        states.set_state("waiting", session="claude:session-a:main")
+
+        generation = states.load_state()["generation"]
+        self.spawn_restore.assert_called_once_with(
+            states.WAITING_WAKE_AFTER, generation
+        )
+
+    def test_reserved_wake_up_is_not_stacked(self):
+        states.set_state("waiting", session="claude:session-a:main")
+        states.set_state("waiting", session="codex:session-b:main")
+
+        self.assertEqual(self.spawn_restore.call_count, 1)
+
+    def test_lapsed_reservation_is_rearmed_on_the_next_waiting_entry(self):
+        states.set_state("waiting", session="claude:session-a:main")
+        state = states.load_state()
+        state["wake_at"] = time.time() - 1  # the reserved wake has fired
+        states.save_state(state)
+
+        states.set_state("waiting", session="codex:session-b:main")
+
+        self.assertEqual(self.spawn_restore.call_count, 2)
+
+    def test_release_event_rearms_a_lapsed_wake_for_surviving_owners(self):
+        # An owner that joined mid-chain outlives the reserved wake. Once
+        # the reservation has lapsed, the wake's own restore event (or any
+        # later one) must arm a follow-up, or that owner could strand.
+        survivor = "claude:session-a:main"
+        states.set_state("waiting", session=survivor)
+        state = states.load_state()
+        state["wake_at"] = time.time() - 1
+        states.save_state(state)
+
+        states.release_waiting(session="codex:session-b:main")
+
+        self.assertEqual(
+            [c.args[0] for c in self.spawn_restore.call_args_list],
+            [states.WAITING_WAKE_AFTER, states.WAITING_WAKE_AFTER],
+        )
+        self.assertEqual(states.load_state()["owners"], [survivor])
+
+    def test_full_restore_keeps_the_pending_wake_reservation(self):
+        owner = "claude:session-a:main"
+        states.set_state("waiting", session=owner)
+        states.restore(session=owner)  # approval answered, back to idle
+
+        states.set_state("waiting", session=owner)  # next PermissionRequest
+
+        # The hour-long sleeper from the first entry is still out there; a
+        # second one must not stack behind it.
+        self.assertEqual(self.spawn_restore.call_count, 1)
+
+    def test_ttl_wake_up_clears_lone_dead_sessions(self):
+        first = "claude:session-a:main"
+        second = "codex:session-b:main"
+        states.set_state("waiting", session=first)
+        delay, generation = self.spawn_restore.call_args.args
+        self.assertEqual(delay, states.WAITING_WAKE_AFTER)
+        states.set_state("waiting", session=second)  # supersedes generation
+        self._age_owner(first)
+        self._age_owner(second)
+
+        # Both sessions are dead: the reserved wake-up is the only event
+        # left. Its restore carries the spawn-time (now stale) generation;
+        # the sweep expires both owners and the durable-orphan bypass lets
+        # it turn the lights off anyway.
+        states.restore(generation=generation)
+
+        self.assertIsNone(states.load_state()["active"])
+        self.assertEqual(FakeKeyboard.restored, [FakeKeyboard().snapshot()])
+
+    def test_reboot_invalidates_the_wake_reservation(self):
+        # The sleeper died with the OS. Its reservation carries a monotonic
+        # mark from the previous boot, which reads as larger than the
+        # current clock — the next waiting entry must spawn a replacement.
+        states.set_state("waiting", session="claude:session-a:main")
+        state = states.load_state()
+        # A boot-time anchor from a previous boot: shifted well past the
+        # 60s tolerance, whichever direction the clocks moved.
+        state["wake_boot"] = (time.time() - time.monotonic()) - 10_000
+        states.save_state(state)
+
+        states.set_state("waiting", session="codex:session-b:main")
+
+        self.assertEqual(self.spawn_restore.call_count, 2)
+
+    def test_failed_rearm_spawn_drops_the_reservation_too(self):
+        # The restore-side rearm follows the same liveness rule as the
+        # waiting-entry site (found in review: only one of the two spawn
+        # sites cancelled on failure).
+        survivor = "claude:session-a:main"
+        states.set_state("waiting", session=survivor)
+        state = states.load_state()
+        state["wake_at"] = time.time() - 1  # the reserved wake has lapsed
+        states.save_state(state)
+
+        self.spawn_restore.return_value = False
+        states.release_waiting(session="codex:session-b:main")
+
+        self.assertNotIn("wake_at", states.load_state())
+
+    def test_failed_wake_spawn_drops_the_reservation(self):
+        # A reservation without a sleeper behind it would suppress every
+        # replacement; when the spawn fails the reservation must go too.
+        self.spawn_restore.return_value = False
+        states.set_state("waiting", session="claude:session-a:main")
+
+        self.assertNotIn("wake_at", states.load_state())
+
+        self.spawn_restore.return_value = True
+        states.set_state("waiting", session="codex:session-b:main")
+        self.assertEqual(self.spawn_restore.call_count, 2)
+
+
+class SweepLockBudgetTests(StateFileTestCase):
+    """set_state acquires the state lock twice (sweep, then transition).
+
+    Two full 3 s acquisitions could burn ~6 s under contention, past the
+    documented 5 s hook deadline. The best-effort sweep phase must ask for
+    less so the worst case stays below it (#33).
+    """
+
+    def test_sweep_phase_requests_a_shorter_lock_timeout(self):
+        timeouts = []
+        real_lock = states._state_lock
+
+        def recording_lock(timeout=3.0):
+            timeouts.append(timeout)
+            return real_lock(timeout=timeout)
+
+        with mock.patch.object(states, "_state_lock", recording_lock):
+            states.set_state("waiting", session="claude:session-a:main")
+
+        self.assertEqual(timeouts, [1.0, 3.0])
 
 
 class SignalBaselineGuardTests(StateFileTestCase):
@@ -592,6 +757,24 @@ class SignalBaselineGuardTests(StateFileTestCase):
         self.assertEqual(states.load_state()["baseline"],
                          FakeKeyboard().snapshot())
 
+    def test_baseline_mode_without_baseline_still_goes_dark(self):
+        # Discarding a polluted snapshot leaves baseline None. Under the
+        # default "baseline" restore mode there is then nothing to repaint,
+        # and skipping the keyboard entirely would leave the last signal
+        # lit forever — the restore must still darken it (#35 review).
+        self._set_waiting_with_snapshot({
+            "effect": 2, "speed": 170, "brightness": 255, "color": [21, 255],
+        })
+        self.assertIsNone(states.load_state()["baseline"])
+
+        states.restore(session="claude:session-a:main")
+
+        state = states.load_state()
+        self.assertIsNone(state["active"])
+        self.assertIn((states.via.VALUE_BRIGHTNESS, 0), FakeKeyboard.values)
+        self.assertIn(0, FakeKeyboard.settled)
+        self.assertEqual(FakeKeyboard.restored, [])  # nothing to repaint
+
     def test_one_field_off_a_signal_pattern_is_still_adopted(self):
         snap = {"effect": 2, "speed": 170, "brightness": 254,
                 "color": [21, 255]}  # brightness one off waiting's 255
@@ -644,6 +827,66 @@ class SignalBaselineGuardTests(StateFileTestCase):
         self.assertEqual(FakeKeyboard.values,
                          [(states.via.VALUE_BRIGHTNESS, 0)])
         self.assertEqual(FakeKeyboard.restored, [])
+
+
+class RestoreBrightnessSettleTests(StateFileTestCase):
+    """Restore settles the final brightness with read-back (#34).
+
+    Measured on a K8 Pro: after a sequence that includes an effect change,
+    the firmware can ACK a lone brightness write and silently revert it —
+    three production repros ended restore('off') at brightness 255. Both
+    restore branches therefore route the final brightness through the
+    settle_brightness helper.
+    """
+
+    def _enter_waiting(self):
+        states.set_state("waiting", session="claude:session-a:main")
+
+    def test_off_restore_settles_brightness_to_zero(self):
+        self._enter_waiting()
+
+        with mock.patch.object(
+            states, "load_config", return_value={"restore": "off"}
+        ):
+            states.restore(session="claude:session-a:main")
+
+        self.assertEqual(FakeKeyboard.settled, [0])
+
+    def test_baseline_restore_settles_snapshot_brightness(self):
+        self._enter_waiting()
+
+        states.restore(session="claude:session-a:main")
+
+        self.assertEqual(FakeKeyboard.settled,
+                         [FakeKeyboard().snapshot()["brightness"]])
+
+    def test_unsettled_brightness_logs_and_does_not_raise(self):
+        self._enter_waiting()
+
+        with mock.patch.object(
+            FakeKeyboard, "settle_brightness", return_value=False,
+        ), mock.patch.object(
+            states, "load_config", return_value={"restore": "off"}
+        ):
+            states.restore(session="claude:session-a:main")  # must not raise
+
+        self.assertIsNone(states.load_state()["active"])
+        with open(states.LOG_FILE, encoding="utf-8") as f:
+            self.assertIn("brightness 0 not confirmed", f.read())
+
+    def test_unconfirmed_color_keeps_baseline_restore_dark(self):
+        # apply_snapshot returning False means the color never settled and
+        # the LEDs were left dark; raising brightness onto the wrong color
+        # would defeat that guard, so no settle may run.
+        self._enter_waiting()
+
+        with mock.patch.object(
+            FakeKeyboard, "apply_snapshot", return_value=False,
+        ):
+            states.restore(session="claude:session-a:main")
+
+        self.assertIsNone(states.load_state()["active"])
+        self.assertEqual(FakeKeyboard.settled, [])
 
 
 class LogRotationTests(unittest.TestCase):

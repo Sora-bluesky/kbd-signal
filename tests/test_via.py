@@ -153,5 +153,124 @@ class SetColorTests(unittest.TestCase):
         kb.get_value.assert_called_once_with(via.VALUE_COLOR, 2, tries=1)
 
 
+class SettleBrightnessTests(unittest.TestCase):
+    """settle_brightness writes-and-verifies until the value sticks (#34).
+
+    Measured on a K8 Pro: after a sequence that includes an effect change,
+    a lone brightness write can be ACKed yet silently reverted by the
+    firmware (a later read shows the pre-change value). The loop does not
+    depend on explaining that behavior — write-and-verify wins regardless.
+    """
+
+    @staticmethod
+    def _kb():
+        kb = via.Keyboard.__new__(via.Keyboard)
+        kb._reset_on_effect = True
+        return kb
+
+    def test_converges_when_first_writes_are_swallowed(self):
+        # Failure mode from #34: the firmware swallows the first N
+        # brightness writes, read-back keeps showing the old value.
+        kb = self._kb()
+        state = {"swallow": 2, "brightness": 255}
+
+        def set_value(value_id, *data):
+            if value_id != via.VALUE_BRIGHTNESS:
+                return
+            if state["swallow"]:
+                state["swallow"] -= 1  # ACKed but silently reverted
+            else:
+                state["brightness"] = data[0]
+
+        kb.set_value = set_value
+        kb.get_value = lambda value_id, length=1, tries=6: [state["brightness"]]
+        self.assertTrue(via.Keyboard.settle_brightness(kb, 0, settle=0, hold=0))
+        self.assertEqual(state["brightness"], 0)
+
+    def test_confirmation_inside_revert_window_is_not_trusted(self):
+        # #34 on the K8 Pro: a write is confirmed by a read at ~100 ms,
+        # then the delayed firmware restore snaps it back at ~150 ms
+        # (reverts measured as late as ~300 ms). A confirmation must
+        # only count once the revert window has passed; until then the
+        # loop keeps rewriting so it outlives the reversion.
+        kb = self._kb()
+        now = [0.0]
+        state = {"brightness": 255, "reverted": False}
+
+        def set_value(value_id, *data):
+            state["brightness"] = data[0]
+
+        def sleep(seconds):
+            now[0] += seconds
+            if now[0] >= 0.15 and not state["reverted"]:
+                state["reverted"] = True
+                state["brightness"] = 255  # delayed firmware restore
+
+        kb.set_value = set_value
+        kb.get_value = lambda value_id, length=1, tries=6: \
+            [state["brightness"]]
+        with mock.patch.object(via.time, "monotonic", lambda: now[0]), \
+                mock.patch.object(via.time, "sleep", sleep):
+            self.assertTrue(via.Keyboard.settle_brightness(kb, 0))
+        # The loop must have stayed alive past the reversion and won.
+        self.assertTrue(state["reverted"])
+        self.assertEqual(state["brightness"], 0)
+
+    def test_gives_up_within_budget_without_raising(self):
+        kb = self._kb()
+        kb.set_value = mock.Mock()
+        kb.get_value = mock.Mock(return_value=[255])  # never sticks
+        self.assertFalse(
+            via.Keyboard.settle_brightness(kb, 0, settle=0, hold=0,
+                                           budget=0.02)
+        )
+
+    def test_confirmed_read_past_the_window_stops_the_loop(self):
+        # Once the revert window is over (hold=0 here), the first
+        # confirmed read must terminate the loop immediately.
+        kb = self._kb()
+        kb.set_value = mock.Mock()
+        kb.get_value = mock.Mock(return_value=[0])
+        self.assertTrue(via.Keyboard.settle_brightness(kb, 0, settle=0, hold=0))
+        kb.get_value.assert_called_once()
+
+    def test_errors_count_as_miss_not_raised(self):
+        # Same contract as set_color: a hook must exit cleanly, so
+        # write/read errors are a miss, never an exception.
+        kb = self._kb()
+        kb.set_value = mock.Mock(side_effect=OSError("write failed"))
+        kb.get_value = mock.Mock(side_effect=[OSError("no response"), [0]])
+        self.assertTrue(via.Keyboard.settle_brightness(kb, 0, settle=0, hold=0))
+
+    def test_writes_stop_at_the_deadline_and_sleeps_are_clamped(self):
+        # A blocking SET burns two read timeouts, so the deadline must be
+        # checked right before each write and the inter-write sleep clamped
+        # to the remaining budget — otherwise an iteration entered just in
+        # time overshoots the advertised ceiling by most of a write plus a
+        # full settle (#36 review).
+        kb = self._kb()
+        now = [0.0]
+        start_times, sleeps = [], []
+
+        def fake_set(*_args):
+            start_times.append(now[0])
+            now[0] += 0.6  # blocking write
+
+        def fake_sleep(seconds):
+            sleeps.append(seconds)
+            now[0] += seconds
+
+        kb.set_value = fake_set
+        kb.get_value = mock.Mock(return_value=[123])  # never confirms
+        with mock.patch.object(via.time, "monotonic", lambda: now[0]), \
+                mock.patch.object(via.time, "sleep", fake_sleep):
+            self.assertFalse(via.Keyboard.settle_brightness(
+                kb, 0, settle=0.1, hold=0, budget=1.5))
+        self.assertTrue(all(t < 1.5 for t in start_times))
+        # Total elapsed: at most the budget plus one in-flight write; an
+        # unclamped final sleep would push past this.
+        self.assertLessEqual(now[0], 2.05)
+
+
 if __name__ == "__main__":
     unittest.main()

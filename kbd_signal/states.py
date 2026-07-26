@@ -40,6 +40,13 @@ DONE_RESTORE_AFTER = 5  # seconds
 # (#26/#28).
 WAITING_TTL = 3600  # seconds
 
+# Delay of the TTL wake-up a waiting transition schedules for itself: a lone
+# session that dies at its PermissionRequest sends no later hook, so the
+# expiry sweep would never run and the orange would stay until an unrelated
+# event — the exact 1h20m incident (#31). Slightly past the TTL so the sweep
+# the wake-up triggers sees the owner unambiguously expired.
+WAITING_WAKE_AFTER = WAITING_TTL + 5  # seconds
+
 # Cap the log by rotating to a single `.1` generation once it grows past this,
 # so total on-disk usage stays bounded at ~2x instead of growing forever
 # (every hook writes a line; PostToolUse fires constantly).
@@ -278,6 +285,62 @@ def _expire_stale_owners(state, now=None, now_mono=None):
     return changed
 
 
+def _wake_reserved(state, now):
+    """True while an already-spawned TTL wake-up is still due to fire.
+
+    The reservation is a wall-clock epoch in the state file: hooks are
+    separate processes, so nothing in memory can dedupe them. An epoch
+    beyond now + WAITING_WAKE_AFTER is impossible for a live reservation
+    (the wall clock stepped back under it) and is treated as absent
+    rather than trusted — it could otherwise suppress wake-ups for an
+    arbitrary while.
+
+    A reservation also proves nothing across a reboot: the sleeper died
+    with the OS. Reboots are detected with a boot-time anchor (wall clock
+    minus monotonic clock, stored at reservation time) — the anchor shifts
+    on every reboot, whereas a plain monotonic comparison stops detecting
+    one as soon as the new boot's uptime passes the stored mark (#36
+    review). A suspend can shift the anchor too; that only over-
+    invalidates, which is safe — the next waiting entry just spawns a
+    fresh sleeper and the epoch gate keeps them deduplicated.
+    """
+    wake_at = state.get("wake_at")
+    wake_boot = state.get("wake_boot")
+    same_boot = (isinstance(wake_boot, (int, float))
+                 and abs((now - time.monotonic()) - wake_boot) < 60)
+    return (isinstance(wake_at, (int, float))
+            and now < wake_at <= now + WAITING_WAKE_AFTER
+            and same_boot)
+
+
+def _reserve_wake(state):
+    """Claim the single pending TTL wake-up slot. Returns True when the
+    caller must spawn the wake-up (after saving the state just mutated).
+
+    PermissionRequest fires constantly and every wake-up is an hour-long
+    sleeper process, so spawning one per waiting entry would stack them;
+    one pending wake is enough. Guarantee for owners that join mid-chain
+    and outlive the reserved wake: the wake's own restore runs the expiry
+    sweep, and by then the reservation has lapsed, so that very event (or
+    any later waiting entry / restore) reserves and spawns a follow-up —
+    every abandoned owner is swept within one further wake period, with
+    no dependence on external events."""
+    now = time.time()
+    if _wake_reserved(state, now):
+        return False
+    state["wake_at"] = now + WAITING_WAKE_AFTER
+    state["wake_boot"] = now - time.monotonic()
+    return True
+
+
+def _cancel_wake(state):
+    """Drop a wake reservation whose sleeper never started, so the next
+    waiting entry retries instead of trusting a wake that will never
+    come (#36 review)."""
+    state.pop("wake_at", None)
+    state.pop("wake_boot", None)
+
+
 def _looks_like_signal(snap):
     """True when the snapshot matches a known signal pattern on every field.
 
@@ -363,8 +426,13 @@ def set_state(name, session=None, owner_prefix=None, owner_aliases=()):
     # device): a main-session Stop can be the final lifecycle event, and it
     # must clean up stale waiting state no matter what happens after —
     # otherwise an abandoned approval strands the orange signal (#31).
+    # The sweep gets a shorter lock budget than the transition: set_state
+    # acquires the lock twice, and two full 3 s waits under contention
+    # would burn ~6 s — past the 5 s hook deadline. 1 s + 3 s keeps the
+    # worst case around 4 s, and a sweep that loses the lock just runs on
+    # the next event anyway.
     try:
-        with _state_lock():
+        with _state_lock(timeout=1.0):
             state = load_state()
             if _expire_stale_owners(state):
                 # No generation bump: expiry is bookkeeping, not a signal.
@@ -448,8 +516,14 @@ def _apply_state(kb, state, name, session, pattern, owner_prefix,
             # A fresh PermissionRequest restarts this owner's TTL clock.
             state.setdefault("owner_seen", {})[session] = {
                 "wall": time.time(), "mono": time.monotonic()}
+        # Schedule the wake-up that expires this owner if its session dies
+        # here (#31). No new logic at the receiving end: the sweep expires
+        # the stale owner, and the durable-orphan bypass lets even a
+        # superseded generation turn the lights off.
+        spawn_wake = _reserve_wake(state)
     else:
         state["owners"] = []
+        spawn_wake = False
     state.pop("owner", None)
     _sync_owner_seen(state)
     # A real transition supersedes any recorded orphaning: waiting gets a
@@ -466,6 +540,11 @@ def _apply_state(kb, state, name, session, pattern, owner_prefix,
         f"owner_count {len(state['owners'])})")
     if name == "done":
         _spawn_delayed_restore(DONE_RESTORE_AFTER, state["generation"])
+    elif spawn_wake:
+        if not _spawn_delayed_restore(WAITING_WAKE_AFTER,
+                                      state["generation"]):
+            _cancel_wake(state)
+            save_state(state)
     return True
 
 
@@ -510,6 +589,21 @@ def _restore_locked(generation, session, owner_prefix=None, owner_aliases=(),
         save_state(state)
     if state["active"] is None:
         return True
+    if (state["active"] == "waiting" and _owners(state)
+            and _reserve_wake(state)):
+        # Keep the wake chain alive: owners that joined while an earlier
+        # wake was reserved can outlive it with their sessions already
+        # dead. Once the reservation lapses (this event may BE that wake),
+        # arm the next one so every abandoned owner is swept within one
+        # further wake period. The epoch gate above bounds this to ~one
+        # spawn per wake period no matter how often restores fire.
+        save_state(state)
+        if not _spawn_delayed_restore(WAITING_WAKE_AFTER,
+                                      state["generation"]):
+            # Same liveness rule as the waiting-entry site: a reservation
+            # without a sleeper behind it would suppress every replacement.
+            _cancel_wake(state)
+            save_state(state)
     # When the sweep above dropped the last owner, waiting is over and this
     # event is the only hook left that can turn the lights off — an
     # abandoned session sends no further events, so even a superseded
@@ -545,10 +639,15 @@ def _restore_locked(generation, session, owner_prefix=None, owner_aliases=(),
     mode = load_config().get("restore", "baseline")
     try:
         with via.Keyboard() as kb:
-            if mode == "off":
-                # Go dark first (avoids a flash of the baseline effect), then
-                # put the stored effect/color back so a manual Fn wake-up
-                # shows the user's own settings, not our last signal.
+            if mode == "off" or not baseline:
+                # Off mode always goes dark first (avoids a flash of the
+                # baseline effect), then puts the stored effect/color back so
+                # a manual Fn wake-up shows the user's own settings. With no
+                # baseline at all (discarded as signal-polluted, or never
+                # captured) there is nothing to repaint in either mode, and
+                # under the default "baseline" mode this used to skip the
+                # keyboard entirely — leaving the last signal lit forever.
+                # Going dark is the only safe restore then (#35 review).
                 kb.set_value(via.VALUE_BRIGHTNESS, 0)
                 if baseline:
                     kb.set_value(via.VALUE_EFFECT, baseline["effect"])
@@ -556,21 +655,42 @@ def _restore_locked(generation, session, owner_prefix=None, owner_aliases=(),
                     # verified write; the effect change resets color first
                     if not kb.set_color(*baseline["color"]):
                         log("restore: color not confirmed after retries")
-            elif baseline:
+                # The firmware can ACK a brightness write after an effect
+                # change and silently revert it (#34: restore('off')
+                # measured ending at 255) — settle with read-back so "off"
+                # reliably goes dark.
+                if not kb.settle_brightness(0):
+                    log("restore: brightness 0 not confirmed after retries")
+            else:
                 if not kb.apply_snapshot(baseline):
+                    # Color never settled: the LEDs were left dark, and
+                    # raising brightness onto the wrong color would defeat
+                    # that guard — no brightness settle either.
                     log("restore: color not confirmed after retries")
+                elif not kb.settle_brightness(baseline["brightness"]):
+                    # Same #34 revert can undo the baseline brightness.
+                    log("restore: brightness not confirmed after retries")
     except (via.DeviceNotFound, OSError) as e:
         # Keyboard gone: RAM-only changes vanish on power cycle anyway.
         log(f"restore: device unavailable ({e})")
-    save_state({"active": None, "generation": state["generation"],
-                "baseline": None})
+    cleared = {"active": None, "generation": state["generation"],
+               "baseline": None}
+    if _wake_reserved(state, time.time()):
+        # An hour-long wake-up sleeper is still pending out there; keep its
+        # reservation across the idle gap so the next waiting entry does
+        # not stack another one behind it.
+        cleared["wake_at"] = state["wake_at"]
+        cleared["wake_boot"] = state["wake_boot"]
+    save_state(cleared)
     log("restore")
     return True
 
 
 def _spawn_delayed_restore(after, generation):
     """Fire-and-forget `kbd-signal restore --after N --gen G` so the CLI
-    itself never has to stay resident."""
+    itself never has to stay resident. Returns False when the process
+    could not be started (the caller may drop a wake reservation that
+    now has no sleeper behind it)."""
     cmd = [sys.executable, "-m", "kbd_signal", "restore",
            "--after", str(after), "--gen", str(generation)]
     try:
@@ -579,3 +699,5 @@ def _spawn_delayed_restore(after, generation):
                          stderr=subprocess.DEVNULL, **_platform.detach_kwargs())
     except OSError as e:
         log(f"delayed restore spawn failed: {e}")
+        return False
+    return True

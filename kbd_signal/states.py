@@ -278,6 +278,42 @@ def _expire_stale_owners(state, now=None, now_mono=None):
     return changed
 
 
+def _looks_like_signal(snap):
+    """True when the snapshot matches a known signal pattern on every field.
+
+    A baseline captured while the keyboard still shows an earlier signal (a
+    leftover from a crashed restore) would save the signal itself as the
+    user's setting, and every later restore would write it back —
+    self-perpetuating pollution (#32, measured 2026-07-26: the baseline
+    became the waiting pattern, so every Fn wake-up showed orange
+    breathing). Speed is compared only when the pattern specifies it (done
+    has none). patterns() derives from the live config, so boards with
+    remapped effect indices are covered automatically.
+
+    Brightness 0 counts as a match too: an "off"-mode restore with no
+    baseline can only dim the leftover signal (there is nothing to repaint
+    effect/color/speed from), so the next snapshot shows the same pattern
+    at brightness 0 — adopting that would hand the guard's own residue
+    back to it and restart the pollution loop one cycle later.
+
+    Trade-off: a user whose real everyday setting exactly equals a signal
+    pattern (full match on every compared field, or its brightness-0
+    variant) loses baseline capture — restore in "off" mode then just goes
+    dark. That cosmetic cost is strictly better than restoring the signal
+    forever."""
+    for pattern in patterns().values():
+        if snap["effect"] != pattern["effect"]:
+            continue
+        if snap["brightness"] not in (pattern["brightness"], 0):
+            continue
+        if list(snap["color"]) != [pattern["hue"], pattern["sat"]]:
+            continue
+        if "speed" in pattern and snap["speed"] != pattern["speed"]:
+            continue
+        return True
+    return False
+
+
 def _owner_matches(owner, session=None, owner_prefix=None, owner_aliases=()):
     if session is not None and owner == session:
         return True
@@ -389,10 +425,18 @@ def _apply_state(kb, state, name, session, pattern, owner_prefix,
         return True
     if state["active"] is None:
         try:
-            state["baseline"] = kb.snapshot()
-        except IOError as e:
+            snap = kb.snapshot()
+        except OSError as e:
             log(f"set {name}: snapshot failed ({e})")
             return False
+        if _looks_like_signal(snap):
+            # A leftover signal must not become the "user's setting":
+            # baseline stays None (restore then goes dark / does nothing)
+            # and the pollution loop is broken (#32).
+            log(f"set {name}: snapshot matches a signal pattern, "
+                f"baseline discarded")
+        else:
+            state["baseline"] = snap
     if name == "waiting":
         aliases = set(owner_aliases)
         owners = [owner for owner in _owners(state)

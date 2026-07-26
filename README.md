@@ -81,6 +81,10 @@ The state dir is `%LOCALAPPDATA%\kbd-signal` on Windows and `~/Library/Applicati
 
 The Fn backlight on/off flag is not readable over VIA, which is why `"off"` exists.
 
+### Troubleshooting
+
+If restores keep bringing back a signal color (or an Fn wake-up shows one), power-cycle the keyboard. Nothing is ever written to EEPROM, so it always comes back with your real settings.
+
 ## Claude Code integration
 
 Register the same command for `PermissionRequest`, `PostToolUse`, `Stop`, and `SessionEnd` in your user-scope `settings.json` (events are dispatched internally by `hook_event_name`):

@@ -81,6 +81,10 @@ kbd-signal hook claude           # Claude Code hooks 用(stdin JSON)
 kbd-signal hook codex [<json>]   # Codex hooks(stdin) / 旧 notify(argv) 用
 ```
 
+### トラブルシューティング
+
+restore のたびに演出色が戻ってくる(または Fn 点灯で演出色が出る)場合は、キーボードの電源を入れ直す。EEPROM には一切書き込んでいないため、電源再投入で必ず本来のユーザー設定に戻る。
+
 ## エージェント連携
 
 ### Claude Code (user scope `settings.json`)

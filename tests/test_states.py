@@ -83,6 +83,14 @@ class StateFileTestCase(unittest.TestCase):
         FakeKeyboard.restored = []
         FakeKeyboard.values = []
 
+    def _age_owner(self, owner):
+        state = states.load_state()
+        state["owner_seen"][owner] = {
+            "wall": time.time() - states.WAITING_TTL - 1,
+            "mono": time.monotonic() - states.WAITING_TTL - 1,
+        }
+        states.save_state(state)
+
 
 class StateOwnershipTests(StateFileTestCase):
     def test_other_product_completion_cannot_clear_waiting(self):
@@ -97,7 +105,12 @@ class StateOwnershipTests(StateFileTestCase):
         state = states.load_state()
         self.assertEqual(state["active"], "waiting")
         self.assertEqual(state["owners"], [claude])
-        self.spawn_restore.assert_not_called()
+        # No done-restore was scheduled (the only spawn so far is the
+        # waiting transition's TTL wake-up).
+        self.assertNotIn(
+            states.DONE_RESTORE_AFTER,
+            [c.args[0] for c in self.spawn_restore.call_args_list],
+        )
 
         states.set_state(
             "done", session=claude, owner_prefix="claude:session-a:"
@@ -105,7 +118,8 @@ class StateOwnershipTests(StateFileTestCase):
         state = states.load_state()
         self.assertEqual(state["active"], "done")
         self.assertEqual(state["owners"], [])
-        self.spawn_restore.assert_called_once()
+        self.assertEqual(self.spawn_restore.call_args.args[0],
+                         states.DONE_RESTORE_AFTER)
 
     def test_non_owner_completion_is_blocked(self):
         states.set_state("waiting", session="claude:session-a:main")
@@ -223,14 +237,6 @@ class WaitingTTLTests(StateFileTestCase):
     (both the wall and the monotonic half), so no test ever sleeps or
     mocks the clock.
     """
-
-    def _age_owner(self, owner):
-        state = states.load_state()
-        state["owner_seen"][owner] = {
-            "wall": time.time() - states.WAITING_TTL - 1,
-            "mono": time.monotonic() - states.WAITING_TTL - 1,
-        }
-        states.save_state(state)
 
     def test_stale_last_owner_expires_and_restore_runs(self):
         stale = "claude:session-a:main"
@@ -535,7 +541,93 @@ class WaitingTTLTests(StateFileTestCase):
         state = states.load_state()
         self.assertEqual(state["active"], "done")
         self.assertEqual(state["owners"], [])
-        self.spawn_restore.assert_called_once()
+        # The done-restore was scheduled (waiting's TTL wake-up aside).
+        self.assertEqual(self.spawn_restore.call_args.args[0],
+                         states.DONE_RESTORE_AFTER)
+
+
+class TTLWakeUpTests(StateFileTestCase):
+    """Entering waiting schedules its own TTL wake-up (#31, #33).
+
+    The expiry sweep only runs when some later hook fires; a lone session
+    that dies at its PermissionRequest never sends one, so the orange
+    stayed until an unrelated event (the 1h20m incident). The waiting
+    transition therefore spawns a delayed restore of its own — while
+    keeping at most ~one such hour-long sleeper pending, because
+    PermissionRequest fires constantly.
+    """
+
+    def test_entering_waiting_schedules_the_ttl_wake_up(self):
+        states.set_state("waiting", session="claude:session-a:main")
+
+        generation = states.load_state()["generation"]
+        self.spawn_restore.assert_called_once_with(
+            states.WAITING_WAKE_AFTER, generation
+        )
+
+    def test_reserved_wake_up_is_not_stacked(self):
+        states.set_state("waiting", session="claude:session-a:main")
+        states.set_state("waiting", session="codex:session-b:main")
+
+        self.assertEqual(self.spawn_restore.call_count, 1)
+
+    def test_lapsed_reservation_is_rearmed_on_the_next_waiting_entry(self):
+        states.set_state("waiting", session="claude:session-a:main")
+        state = states.load_state()
+        state["wake_at"] = time.time() - 1  # the reserved wake has fired
+        states.save_state(state)
+
+        states.set_state("waiting", session="codex:session-b:main")
+
+        self.assertEqual(self.spawn_restore.call_count, 2)
+
+    def test_release_event_rearms_a_lapsed_wake_for_surviving_owners(self):
+        # An owner that joined mid-chain outlives the reserved wake. Once
+        # the reservation has lapsed, the wake's own restore event (or any
+        # later one) must arm a follow-up, or that owner could strand.
+        survivor = "claude:session-a:main"
+        states.set_state("waiting", session=survivor)
+        state = states.load_state()
+        state["wake_at"] = time.time() - 1
+        states.save_state(state)
+
+        states.release_waiting(session="codex:session-b:main")
+
+        self.assertEqual(
+            [c.args[0] for c in self.spawn_restore.call_args_list],
+            [states.WAITING_WAKE_AFTER, states.WAITING_WAKE_AFTER],
+        )
+        self.assertEqual(states.load_state()["owners"], [survivor])
+
+    def test_full_restore_keeps_the_pending_wake_reservation(self):
+        owner = "claude:session-a:main"
+        states.set_state("waiting", session=owner)
+        states.restore(session=owner)  # approval answered, back to idle
+
+        states.set_state("waiting", session=owner)  # next PermissionRequest
+
+        # The hour-long sleeper from the first entry is still out there; a
+        # second one must not stack behind it.
+        self.assertEqual(self.spawn_restore.call_count, 1)
+
+    def test_ttl_wake_up_clears_lone_dead_sessions(self):
+        first = "claude:session-a:main"
+        second = "codex:session-b:main"
+        states.set_state("waiting", session=first)
+        delay, generation = self.spawn_restore.call_args.args
+        self.assertEqual(delay, states.WAITING_WAKE_AFTER)
+        states.set_state("waiting", session=second)  # supersedes generation
+        self._age_owner(first)
+        self._age_owner(second)
+
+        # Both sessions are dead: the reserved wake-up is the only event
+        # left. Its restore carries the spawn-time (now stale) generation;
+        # the sweep expires both owners and the durable-orphan bypass lets
+        # it turn the lights off anyway.
+        states.restore(generation=generation)
+
+        self.assertIsNone(states.load_state()["active"])
+        self.assertEqual(FakeKeyboard.restored, [FakeKeyboard().snapshot()])
 
 
 class SweepLockBudgetTests(StateFileTestCase):

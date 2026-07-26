@@ -651,6 +651,21 @@ class TTLWakeUpTests(StateFileTestCase):
 
         self.assertEqual(self.spawn_restore.call_count, 2)
 
+    def test_failed_rearm_spawn_drops_the_reservation_too(self):
+        # The restore-side rearm follows the same liveness rule as the
+        # waiting-entry site (found in review: only one of the two spawn
+        # sites cancelled on failure).
+        survivor = "claude:session-a:main"
+        states.set_state("waiting", session=survivor)
+        state = states.load_state()
+        state["wake_at"] = time.time() - 1  # the reserved wake has lapsed
+        states.save_state(state)
+
+        self.spawn_restore.return_value = False
+        states.release_waiting(session="codex:session-b:main")
+
+        self.assertNotIn("wake_at", states.load_state())
+
     def test_failed_wake_spawn_drops_the_reservation(self):
         # A reservation without a sleeper behind it would suppress every
         # replacement; when the spawn fails the reservation must go too.

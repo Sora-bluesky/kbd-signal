@@ -593,7 +593,12 @@ def _restore_locked(generation, session, owner_prefix=None, owner_aliases=(),
         # further wake period. The epoch gate above bounds this to ~one
         # spawn per wake period no matter how often restores fire.
         save_state(state)
-        _spawn_delayed_restore(WAITING_WAKE_AFTER, state["generation"])
+        if not _spawn_delayed_restore(WAITING_WAKE_AFTER,
+                                      state["generation"]):
+            # Same liveness rule as the waiting-entry site: a reservation
+            # without a sleeper behind it would suppress every replacement.
+            _cancel_wake(state)
+            save_state(state)
     # When the sweep above dropped the last owner, waiting is over and this
     # event is the only hook left that can turn the lights off — an
     # abandoned session sends no further events, so even a superseded

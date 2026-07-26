@@ -6,6 +6,7 @@ import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
+from typing import ClassVar
 from unittest import mock
 
 from kbd_signal import states
@@ -535,6 +536,114 @@ class WaitingTTLTests(StateFileTestCase):
         self.assertEqual(state["active"], "done")
         self.assertEqual(state["owners"], [])
         self.spawn_restore.assert_called_once()
+
+
+class SignalBaselineGuardTests(StateFileTestCase):
+    """Snapshots that look like a leftover signal are never adopted (#32).
+
+    A baseline captured while the keyboard still shows an earlier signal
+    would save the signal itself as the user's setting, and every later
+    restore would write it back — self-perpetuating pollution.
+    """
+
+    FULL_PATTERNS: ClassVar[dict] = {
+        "waiting": {"effect": 2, "hue": 21, "sat": 255, "speed": 170,
+                    "brightness": 255},
+        "done": {"effect": 1, "hue": 85, "sat": 255, "brightness": 255},
+        "error": {"effect": 2, "hue": 0, "sat": 255, "speed": 255,
+                  "brightness": 255},
+    }
+
+    def setUp(self):
+        super().setUp()
+        # The shared fixture stubs patterns() down to bare effects; the
+        # guard compares every field, so give it the full shape.
+        self.stack.enter_context(mock.patch.object(
+            states, "patterns", return_value=self.FULL_PATTERNS
+        ))
+
+    def _set_waiting_with_snapshot(self, snap):
+        with mock.patch.object(FakeKeyboard, "snapshot", return_value=snap):
+            states.set_state("waiting", session="claude:session-a:main")
+
+    def test_waiting_shaped_snapshot_is_not_adopted_as_baseline(self):
+        self._set_waiting_with_snapshot({
+            "effect": 2, "speed": 170, "brightness": 255, "color": [21, 255],
+        })
+
+        state = states.load_state()
+        self.assertIsNone(state["baseline"])
+        # The signal itself still applies.
+        self.assertEqual(state["active"], "waiting")
+        self.assertEqual(FakeKeyboard.applied,
+                         [self.FULL_PATTERNS["waiting"]])
+
+    def test_done_shaped_snapshot_matches_without_speed_key(self):
+        # The done pattern has no speed key, so any snapshot speed matches.
+        self._set_waiting_with_snapshot({
+            "effect": 1, "speed": 42, "brightness": 255, "color": [85, 255],
+        })
+
+        self.assertIsNone(states.load_state()["baseline"])
+
+    def test_normal_snapshot_is_adopted_unchanged(self):
+        states.set_state("waiting", session="claude:session-a:main")
+
+        self.assertEqual(states.load_state()["baseline"],
+                         FakeKeyboard().snapshot())
+
+    def test_one_field_off_a_signal_pattern_is_still_adopted(self):
+        snap = {"effect": 2, "speed": 170, "brightness": 254,
+                "color": [21, 255]}  # brightness one off waiting's 255
+        self._set_waiting_with_snapshot(snap)
+
+        self.assertEqual(states.load_state()["baseline"], snap)
+
+    def test_dark_leftover_from_off_restore_is_not_adopted(self):
+        # An off-mode restore with no baseline can only dim the leftover
+        # signal, so the next snapshot is the same pattern at brightness 0.
+        # Adopting it would hand the guard's own residue back to it and
+        # restart the pollution loop one cycle later.
+        self._set_waiting_with_snapshot({
+            "effect": 2, "speed": 170, "brightness": 255, "color": [21, 255],
+        })
+        with mock.patch.object(
+            states, "load_config", return_value={"restore": "off"}
+        ):
+            states.restore(session="claude:session-a:main")
+        self.assertEqual(FakeKeyboard.values,
+                         [(states.via.VALUE_BRIGHTNESS, 0)])
+
+        self._set_waiting_with_snapshot({
+            "effect": 2, "speed": 170, "brightness": 0, "color": [21, 255],
+        })
+
+        state = states.load_state()
+        self.assertIsNone(state["baseline"])
+        self.assertEqual(state["active"], "waiting")
+
+    def test_dark_non_signal_snapshot_is_still_adopted(self):
+        # Brightness 0 alone is not a signal marker: a user's genuinely
+        # dark keyboard with its own effect/color keeps baseline capture.
+        snap = {"effect": 5, "speed": 90, "brightness": 0, "color": [20, 200]}
+        self._set_waiting_with_snapshot(snap)
+
+        self.assertEqual(states.load_state()["baseline"], snap)
+
+    def test_restore_off_without_baseline_only_writes_brightness_zero(self):
+        self._set_waiting_with_snapshot({
+            "effect": 2, "speed": 170, "brightness": 255, "color": [21, 255],
+        })
+
+        with mock.patch.object(
+            states, "load_config", return_value={"restore": "off"}
+        ):
+            states.restore(session="claude:session-a:main")
+
+        self.assertIsNone(states.load_state()["active"])
+        self.assertEqual(FakeKeyboard.values,
+                         [(states.via.VALUE_BRIGHTNESS, 0)])
+        self.assertEqual(FakeKeyboard.restored, [])
 
 
 class LogRotationTests(unittest.TestCase):

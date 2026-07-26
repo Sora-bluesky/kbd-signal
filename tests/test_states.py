@@ -644,7 +644,9 @@ class TTLWakeUpTests(StateFileTestCase):
         # current clock — the next waiting entry must spawn a replacement.
         states.set_state("waiting", session="claude:session-a:main")
         state = states.load_state()
-        state["wake_mono"] = time.monotonic() + 10_000_000
+        # A boot-time anchor from a previous boot: shifted well past the
+        # 60s tolerance, whichever direction the clocks moved.
+        state["wake_boot"] = (time.time() - time.monotonic()) - 10_000
         states.save_state(state)
 
         states.set_state("waiting", session="codex:session-b:main")

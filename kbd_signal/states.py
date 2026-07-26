@@ -296,16 +296,21 @@ def _wake_reserved(state, now):
     arbitrary while.
 
     A reservation also proves nothing across a reboot: the sleeper died
-    with the OS, and its stored monotonic mark — taken on the previous
-    boot — reads as larger than the current clock, which invalidates it
-    so the next waiting entry spawns a replacement (#36 review).
+    with the OS. Reboots are detected with a boot-time anchor (wall clock
+    minus monotonic clock, stored at reservation time) — the anchor shifts
+    on every reboot, whereas a plain monotonic comparison stops detecting
+    one as soon as the new boot's uptime passes the stored mark (#36
+    review). A suspend can shift the anchor too; that only over-
+    invalidates, which is safe — the next waiting entry just spawns a
+    fresh sleeper and the epoch gate keeps them deduplicated.
     """
     wake_at = state.get("wake_at")
-    wake_mono = state.get("wake_mono")
+    wake_boot = state.get("wake_boot")
+    same_boot = (isinstance(wake_boot, (int, float))
+                 and abs((now - time.monotonic()) - wake_boot) < 60)
     return (isinstance(wake_at, (int, float))
             and now < wake_at <= now + WAITING_WAKE_AFTER
-            and isinstance(wake_mono, (int, float))
-            and wake_mono <= time.monotonic())
+            and same_boot)
 
 
 def _reserve_wake(state):
@@ -324,7 +329,7 @@ def _reserve_wake(state):
     if _wake_reserved(state, now):
         return False
     state["wake_at"] = now + WAITING_WAKE_AFTER
-    state["wake_mono"] = time.monotonic()
+    state["wake_boot"] = now - time.monotonic()
     return True
 
 
@@ -333,7 +338,7 @@ def _cancel_wake(state):
     waiting entry retries instead of trusting a wake that will never
     come (#36 review)."""
     state.pop("wake_at", None)
-    state.pop("wake_mono", None)
+    state.pop("wake_boot", None)
 
 
 def _looks_like_signal(snap):
@@ -675,7 +680,7 @@ def _restore_locked(generation, session, owner_prefix=None, owner_aliases=(),
         # reservation across the idle gap so the next waiting entry does
         # not stack another one behind it.
         cleared["wake_at"] = state["wake_at"]
-        cleared["wake_mono"] = state["wake_mono"]
+        cleared["wake_boot"] = state["wake_boot"]
     save_state(cleared)
     log("restore")
     return True

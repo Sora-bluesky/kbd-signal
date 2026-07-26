@@ -184,7 +184,36 @@ class SettleBrightnessTests(unittest.TestCase):
 
         kb.set_value = set_value
         kb.get_value = lambda value_id, length=1, tries=6: [state["brightness"]]
-        self.assertTrue(via.Keyboard.settle_brightness(kb, 0, settle=0))
+        self.assertTrue(via.Keyboard.settle_brightness(kb, 0, settle=0, hold=0))
+        self.assertEqual(state["brightness"], 0)
+
+    def test_confirmation_inside_revert_window_is_not_trusted(self):
+        # #34 on the K8 Pro: a write is confirmed by a read at ~100 ms,
+        # then the delayed firmware restore snaps it back at ~150 ms
+        # (reverts measured as late as ~300 ms). A confirmation must
+        # only count once the revert window has passed; until then the
+        # loop keeps rewriting so it outlives the reversion.
+        kb = self._kb()
+        now = [0.0]
+        state = {"brightness": 255, "reverted": False}
+
+        def set_value(value_id, *data):
+            state["brightness"] = data[0]
+
+        def sleep(seconds):
+            now[0] += seconds
+            if now[0] >= 0.15 and not state["reverted"]:
+                state["reverted"] = True
+                state["brightness"] = 255  # delayed firmware restore
+
+        kb.set_value = set_value
+        kb.get_value = lambda value_id, length=1, tries=6: \
+            [state["brightness"]]
+        with mock.patch.object(via.time, "monotonic", lambda: now[0]), \
+                mock.patch.object(via.time, "sleep", sleep):
+            self.assertTrue(via.Keyboard.settle_brightness(kb, 0))
+        # The loop must have stayed alive past the reversion and won.
+        self.assertTrue(state["reverted"])
         self.assertEqual(state["brightness"], 0)
 
     def test_gives_up_within_budget_without_raising(self):
@@ -192,16 +221,17 @@ class SettleBrightnessTests(unittest.TestCase):
         kb.set_value = mock.Mock()
         kb.get_value = mock.Mock(return_value=[255])  # never sticks
         self.assertFalse(
-            via.Keyboard.settle_brightness(kb, 0, settle=0, budget=0.02)
+            via.Keyboard.settle_brightness(kb, 0, settle=0, hold=0,
+                                           budget=0.02)
         )
 
-    def test_confirmed_first_read_stops_the_loop(self):
-        # Happy path: the first write sticks, so the first confirmed read
-        # must terminate the loop immediately.
+    def test_confirmed_read_past_the_window_stops_the_loop(self):
+        # Once the revert window is over (hold=0 here), the first
+        # confirmed read must terminate the loop immediately.
         kb = self._kb()
         kb.set_value = mock.Mock()
         kb.get_value = mock.Mock(return_value=[0])
-        self.assertTrue(via.Keyboard.settle_brightness(kb, 0, settle=0))
+        self.assertTrue(via.Keyboard.settle_brightness(kb, 0, settle=0, hold=0))
         kb.get_value.assert_called_once()
 
     def test_errors_count_as_miss_not_raised(self):
@@ -210,7 +240,7 @@ class SettleBrightnessTests(unittest.TestCase):
         kb = self._kb()
         kb.set_value = mock.Mock(side_effect=OSError("write failed"))
         kb.get_value = mock.Mock(side_effect=[OSError("no response"), [0]])
-        self.assertTrue(via.Keyboard.settle_brightness(kb, 0, settle=0))
+        self.assertTrue(via.Keyboard.settle_brightness(kb, 0, settle=0, hold=0))
 
 
 if __name__ == "__main__":

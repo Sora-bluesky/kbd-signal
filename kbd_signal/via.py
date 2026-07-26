@@ -231,21 +231,32 @@ class Keyboard:
     # value (#34, measured on a K8 Pro — restore('off') ended at 255 three
     # times, while a bare 255->0 write stuck 3/3). The cause is not fully
     # explained; write-and-verify wins regardless.
-    BRIGHTNESS_SETTLE = 0.1  # read-back cadence; the revert lands late
+    BRIGHTNESS_SETTLE = 0.1  # rewrite/read-back cadence
+    BRIGHTNESS_HOLD = 0.4    # reverts measured as late as ~300 ms (#34)
 
     def settle_brightness(self, value, settle=BRIGHTNESS_SETTLE,
-                          budget=COLOR_BUDGET):
+                          hold=BRIGHTNESS_HOLD, budget=COLOR_BUDGET):
         """Write brightness until a read-back confirms it stuck, within
-        `budget` seconds. Same contract as set_color: never raises (errors
-        count as a miss), read tries are capped by the remaining budget,
-        and it returns False when it gave up (the caller logs that)."""
+        `budget` seconds. A read inside the revert window is not proof:
+        the firmware can confirm the new value at ~100 ms and still snap
+        it back at ~150 ms, with reverts measured as late as ~300 ms
+        (#34) — so for the first `hold` seconds the loop only rewrites,
+        and confirmations count solely after the window has passed. The
+        hold is unconditional (not gated on reset_on_effect) because the
+        board it was measured on ships with the quirk flag off. Same
+        contract as set_color: never raises (errors count as a miss),
+        read tries are capped by the remaining budget, and it returns
+        False when it gave up (the caller logs that)."""
         deadline = time.monotonic() + budget
+        hold_until = time.monotonic() + hold
         while time.monotonic() < deadline:
             try:
                 self.set_value(VALUE_BRIGHTNESS, value)
             except OSError:
                 pass
             time.sleep(settle)
+            if time.monotonic() < hold_until:
+                continue  # rewrite across the revert window; don't trust reads
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 break

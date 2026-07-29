@@ -377,8 +377,8 @@ def _looks_like_signal(snap):
 
     Trade-off: a user whose real everyday setting exactly equals a signal
     pattern (full match on every compared field, or its brightness-0
-    variant) falls back to the last non-signal capture; restore goes dark
-    only when none is stored yet. That cosmetic cost is strictly better
+    variant) falls back to the last non-signal capture; with none stored
+    yet, restore can only go dark. That cosmetic cost is strictly better
     than restoring the signal forever."""
     for pattern in patterns().values():
         if snap["effect"] != pattern["effect"]:

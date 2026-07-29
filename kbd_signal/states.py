@@ -4,6 +4,7 @@ State file (%LOCALAPPDATA%/kbd-signal/state.json):
   {"active": "waiting"|"done"|"error"|null,
    "generation": int,
    "baseline": {...snapshot...},
+   "last_baseline": {...snapshot...},  (optional)
    "owners": ["product:session:agent", ...],
    "owner_seen": {"product:session:agent": {"wall": epoch_seconds,
                                             "mono": monotonic_seconds}, ...},
@@ -341,6 +342,21 @@ def _cancel_wake(state):
     state.pop("wake_boot", None)
 
 
+def _valid_snapshot(snap):
+    """True when snap has the complete shape required for restoration."""
+    if not isinstance(snap, dict):
+        return False
+    for field in ("effect", "speed", "brightness"):
+        value = snap.get(field)
+        if not isinstance(value, int) or isinstance(value, bool):
+            return False
+    color = snap.get("color")
+    return (isinstance(color, (list, tuple))
+            and len(color) == 2
+            and all(isinstance(value, int) and not isinstance(value, bool)
+                    for value in color))
+
+
 def _looks_like_signal(snap):
     """True when the snapshot matches a known signal pattern on every field.
 
@@ -361,9 +377,9 @@ def _looks_like_signal(snap):
 
     Trade-off: a user whose real everyday setting exactly equals a signal
     pattern (full match on every compared field, or its brightness-0
-    variant) loses baseline capture — restore in "off" mode then just goes
-    dark. That cosmetic cost is strictly better than restoring the signal
-    forever."""
+    variant) falls back to the last non-signal capture; with none stored
+    yet, restore can only go dark. That cosmetic cost is strictly better
+    than restoring the signal forever."""
     for pattern in patterns().values():
         if snap["effect"] != pattern["effect"]:
             continue
@@ -498,13 +514,22 @@ def _apply_state(kb, state, name, session, pattern, owner_prefix,
             log(f"set {name}: snapshot failed ({e})")
             return False
         if _looks_like_signal(snap):
-            # A leftover signal must not become the "user's setting":
-            # baseline stays None (restore then goes dark / does nothing)
-            # and the pollution loop is broken (#32).
-            log(f"set {name}: snapshot matches a signal pattern, "
-                f"baseline discarded")
+            # A leftover signal must not become the user's setting. Reuse
+            # only a valid last non-signal capture; otherwise baseline stays
+            # None and restore goes dark (#32: 1,263 discards measured
+            # 2026-07-29).
+            last = state.get("last_baseline")
+            if (_valid_snapshot(last)
+                    and not _looks_like_signal(last)):
+                state["baseline"] = last
+                log(f"set {name}: snapshot matches a signal pattern, "
+                    f"using last known baseline")
+            else:
+                log(f"set {name}: snapshot matches a signal pattern, "
+                    f"baseline discarded")
         else:
             state["baseline"] = snap
+            state["last_baseline"] = snap
     if name == "waiting":
         aliases = set(owner_aliases)
         owners = [owner for owner in _owners(state)
@@ -675,6 +700,8 @@ def _restore_locked(generation, session, owner_prefix=None, owner_aliases=(),
         log(f"restore: device unavailable ({e})")
     cleared = {"active": None, "generation": state["generation"],
                "baseline": None}
+    if "last_baseline" in state:
+        cleared["last_baseline"] = state["last_baseline"]
     if _wake_reserved(state, time.time()):
         # An hour-long wake-up sleeper is still pending out there; keep its
         # reservation across the idle gap so the next waiting entry does

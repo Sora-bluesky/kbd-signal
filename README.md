@@ -85,6 +85,8 @@ The Fn backlight on/off flag is not readable over VIA, which is why `"off"` exis
 
 If restores keep bringing back a signal color (or an Fn wake-up shows one), power-cycle the keyboard. Nothing is ever written to EEPROM, so it always comes back with your real settings.
 
+If a setup that used to come back lit starts staying dark between signals in `"baseline"` mode (in `"off"` mode that is the configured behavior), the likely cause is the snapshot guard discarding a baseline that looked like a leftover signal (writing it back would restore the signal forever). kbd-signal falls back to the last capture that did not look like a signal; until one exists — right after an upgrade or a fresh install — power-cycle the keyboard or switch to a different lighting pattern so your own settings are actually visible, and the next signal captures them. An Fn wake-up alone is not enough here: it can raise the brightness on the leftover signal itself.
+
 ## Claude Code integration
 
 Register the same command for `PermissionRequest`, `PostToolUse`, `Stop`, and `SessionEnd` in your user-scope `settings.json` (events are dispatched internally by `hook_event_name`):

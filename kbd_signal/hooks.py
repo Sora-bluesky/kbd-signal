@@ -12,8 +12,12 @@ from . import states
 
 
 def _read_stdin(stdin, source):
+    stream = stdin or sys.stdin
     try:
-        payload = json.load(stdin or sys.stdin)
+        # Bare Windows hook environments decode text stdin using the locale
+        # encoding, while hook payloads are UTF-8 JSON (#38).
+        data = stream.buffer.read() if hasattr(stream, "buffer") else stream.read()
+        payload = json.loads(data)
     except (TypeError, ValueError) as e:
         states.log(f"hook {source}: stdin parse failed ({e})")
         return None

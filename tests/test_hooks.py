@@ -60,6 +60,18 @@ class HookDispatchTests(unittest.TestCase):
             owner_aliases=("session-bytes",),
         )
 
+    def test_detached_text_stream_is_safe_noop(self):
+        # After detach() the wrapper still has a `buffer` attribute but it
+        # is None; reading must fall back and stay a logged no-op.
+        stdin = io.TextIOWrapper(io.BytesIO(b"{}"))
+        stdin.detach()
+
+        hooks.handle_claude(stdin)
+
+        self.mocks["set_state"].assert_not_called()
+        self.mocks["release_waiting"].assert_not_called()
+        self.mocks["log"].assert_called_once()
+
     def test_codex_permission_request_uses_namespaced_owner(self):
         hooks.handle_codex([], self._stdin({
             "hook_event_name": "PermissionRequest",

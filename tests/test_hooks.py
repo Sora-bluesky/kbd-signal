@@ -21,6 +21,57 @@ class HookDispatchTests(unittest.TestCase):
     def _stdin(payload):
         return io.StringIO(json.dumps(payload))
 
+    def test_utf8_payload_ignores_text_layer_locale_encoding(self):
+        payload = {
+            "hook_event_name": "PermissionRequest",
+            "session_id": "session-utf8",
+            "tool_response": "パス C:\\Users\\日本語\\ファイル.txt",
+        }
+        stdin = io.TextIOWrapper(
+            io.BytesIO(
+                json.dumps(payload, ensure_ascii=False).encode("utf-8")
+            ),
+            encoding="cp932",
+        )
+
+        hooks.handle_claude(stdin)
+
+        self.mocks["set_state"].assert_called_once_with(
+            "waiting",
+            session="claude:session-utf8:main",
+            owner_aliases=("session-utf8",),
+        )
+
+    def test_bytesio_payload_without_text_layer_parses(self):
+        payload = {
+            "hook_event_name": "PermissionRequest",
+            "session_id": "session-bytes",
+            "tool_response": "日本語",
+        }
+        stdin = io.BytesIO(
+            json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        )
+
+        hooks.handle_codex([], stdin)
+
+        self.mocks["set_state"].assert_called_once_with(
+            "waiting",
+            session="codex:session-bytes:main",
+            owner_aliases=("session-bytes",),
+        )
+
+    def test_detached_text_stream_is_safe_noop(self):
+        # After detach() the wrapper still has a `buffer` attribute but it
+        # is None; reading must fall back and stay a logged no-op.
+        stdin = io.TextIOWrapper(io.BytesIO(b"{}"))
+        stdin.detach()
+
+        hooks.handle_claude(stdin)
+
+        self.mocks["set_state"].assert_not_called()
+        self.mocks["release_waiting"].assert_not_called()
+        self.mocks["log"].assert_called_once()
+
     def test_codex_permission_request_uses_namespaced_owner(self):
         hooks.handle_codex([], self._stdin({
             "hook_event_name": "PermissionRequest",

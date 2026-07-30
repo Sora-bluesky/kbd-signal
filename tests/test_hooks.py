@@ -85,6 +85,68 @@ class HookDispatchTests(unittest.TestCase):
             owner_aliases=("session-a",),
         )
 
+    def test_codex_permission_request_logs_permission_mode(self):
+        hooks.handle_codex([], self._stdin({
+            "hook_event_name": "PermissionRequest",
+            "session_id": "session-a",
+            "permission_mode": "bypassPermissions",
+        }))
+
+        self.mocks["log"].assert_called_once()
+        self.assertTrue(
+            self.mocks["log"].call_args.args[0].endswith(
+                " mode=bypassPermissions"
+            )
+        )
+        self.mocks["set_state"].assert_called_once_with(
+            "waiting",
+            session="codex:session-a:main",
+            owner_aliases=("session-a",),
+        )
+
+    def test_codex_permission_request_without_mode_keeps_log_format(self):
+        hooks.handle_codex([], self._stdin({
+            "hook_event_name": "PermissionRequest",
+            "session_id": "session-a",
+        }))
+
+        self.mocks["log"].assert_called_once()
+        # Byte-identical to the pre-#47 format: no suffix of any kind.
+        tag = hooks._owner_tag("codex:session-a:main")
+        self.assertEqual(
+            self.mocks["log"].call_args.args[0],
+            f"hook codex: event=PermissionRequest owner={tag}",
+        )
+
+    def test_codex_permission_request_logs_invalid_mode(self):
+        for mode in (5, "bad\nvalue"):
+            with self.subTest(mode=mode):
+                self.mocks["log"].reset_mock()
+                self.mocks["set_state"].reset_mock()
+
+                hooks.handle_codex([], self._stdin({
+                    "hook_event_name": "PermissionRequest",
+                    "session_id": "session-a",
+                    "permission_mode": mode,
+                }))
+
+                self.mocks["log"].assert_called_once()
+                self.assertTrue(
+                    self.mocks["log"].call_args.args[0].endswith(
+                        " mode=invalid"
+                    )
+                )
+
+    def test_non_permission_request_does_not_log_mode(self):
+        hooks.handle_codex([], self._stdin({
+            "hook_event_name": "PostToolUse",
+            "session_id": "session-a",
+            "permission_mode": "bypassPermissions",
+        }))
+
+        self.mocks["log"].assert_called_once()
+        self.assertNotIn(" mode=", self.mocks["log"].call_args.args[0])
+
     def test_claude_and_codex_sessions_have_distinct_owners(self):
         payload = {
             "hook_event_name": "PermissionRequest",

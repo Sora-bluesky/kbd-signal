@@ -61,8 +61,18 @@ def _handle_lifecycle(source, payload):
         return
 
     owner, session_scope, aliases, is_subagent = identity
+    mode_suffix = ""
+    if event == "PermissionRequest" and "permission_mode" in payload:
+        mode = payload["permission_mode"]
+        # Sanitize external input before writing to the line-oriented log.
+        if (isinstance(mode, str) and 0 < len(mode) <= 32
+                and mode.isalnum()):
+            mode_suffix = f" mode={mode}"
+        else:
+            mode_suffix = " mode=invalid"
     states.log(
         f"hook {source}: event={event or '?'} owner={_owner_tag(owner)}"
+        f"{mode_suffix}"
     )
 
     if event == "PermissionRequest":

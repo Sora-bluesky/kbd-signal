@@ -5,6 +5,12 @@ State file (%LOCALAPPDATA%/kbd-signal/state.json):
    "generation": int,
    "baseline": {...snapshot...},
    "last_baseline": {...snapshot...},  (optional)
+   "last_baseline_device": {"vendor_id": int|null,
+                            "product_id": int|null,
+                            "product_match": str|null,
+                            "v3_channel": int,
+                            "effects": {"solid": int,
+                                        "breathing": int}},  (optional)
    "owners": ["product:session:agent", ...],
    "owner_seen": {"product:session:agent": {"wall": epoch_seconds,
                                             "mono": monotonic_seconds}, ...},
@@ -68,6 +74,31 @@ def patterns():
                      brightness=255),
         "error": dict(effect=fx["breathing"], hue=0, sat=255,
                       speed=255, brightness=255),
+    }
+
+
+def _device_identity():
+    """Configuration fields selecting and interpreting the VIA device.
+
+    ``reset_on_effect`` is intentionally excluded: it changes write timing,
+    not what stored effect, speed, or color values mean.
+
+    Accepted limitation: ``product_match`` is only a preferred filter because
+    VIA falls back to the first candidate. The fingerprint therefore proves
+    the configured selection, not the physical unit. The same pre-existing
+    ambiguity applies to baseline capture versus restore within one signal
+    and is outside this guard's scope.
+    """
+    device = config.device()
+    return {
+        field: device.get(field)
+        for field in (
+            "vendor_id",
+            "product_id",
+            "product_match",
+            "v3_channel",
+            "effects",
+        )
     }
 
 
@@ -343,17 +374,20 @@ def _cancel_wake(state):
 
 
 def _valid_snapshot(snap):
-    """True when snap has the complete shape required for restoration."""
+    """True when snap has the complete byte-safe shape for restoration."""
     if not isinstance(snap, dict):
         return False
     for field in ("effect", "speed", "brightness"):
         value = snap.get(field)
-        if not isinstance(value, int) or isinstance(value, bool):
+        if (not isinstance(value, int) or isinstance(value, bool)
+                or not 0 <= value < 256):
             return False
     color = snap.get("color")
     return (isinstance(color, (list, tuple))
             and len(color) == 2
-            and all(isinstance(value, int) and not isinstance(value, bool)
+            and all(isinstance(value, int)
+                    and not isinstance(value, bool)
+                    and 0 <= value < 256
                     for value in color))
 
 
@@ -456,6 +490,7 @@ def set_state(name, session=None, owner_prefix=None, owner_aliases=()):
     except LockTimeout as e:
         log(f"set {name}: {e} (expiry sweep), continuing")
     pattern = patterns()[name]
+    device_identity = _device_identity()
     # Open the device OUTSIDE the lock: enumerate/open/probe have no time
     # bound, and holding the 3s lock across them would make every
     # concurrent hook time out and drop its signal on a slow device.
@@ -466,15 +501,16 @@ def set_state(name, session=None, owner_prefix=None, owner_aliases=()):
         return False
     try:
         return _set_state_locked(
-            kb, name, session, pattern, owner_prefix, owner_aliases
+            kb, name, session, pattern, device_identity,
+            owner_prefix, owner_aliases
         )
     except LockTimeout as e:
         log(f"set {name}: {e}, skipped")
         return False
 
 
-def _set_state_locked(kb, name, session, pattern, owner_prefix=None,
-                      owner_aliases=()):
+def _set_state_locked(kb, name, session, pattern, device_identity,
+                      owner_prefix=None, owner_aliases=()):
     with kb, _state_lock():
         # Re-read and re-sweep under the transition lock: the state may
         # have moved while the device was opening, and the sweep is cheap
@@ -484,12 +520,14 @@ def _set_state_locked(kb, name, session, pattern, owner_prefix=None,
             # Persist without a generation bump so the expiry sticks even
             # when a branch below returns early (blocked / sticky error).
             save_state(state)
-        return _apply_state(kb, state, name, session, pattern,
-                            owner_prefix, owner_aliases)
+        return _apply_state(
+            kb, state, name, session, pattern, device_identity,
+            owner_prefix, owner_aliases
+        )
 
 
-def _apply_state(kb, state, name, session, pattern, owner_prefix,
-                 owner_aliases):
+def _apply_state(kb, state, name, session, pattern, device_identity,
+                 owner_prefix, owner_aliases):
     """Run the guarded transition. Caller holds the state lock and the
     open keyboard, and has already swept (and persisted) expired owners."""
     if state["active"] == "error" and name != "error":
@@ -515,11 +553,13 @@ def _apply_state(kb, state, name, session, pattern, owner_prefix,
             return False
         if _looks_like_signal(snap):
             # A leftover signal must not become the user's setting. Reuse
-            # only a valid last non-signal capture; otherwise baseline stays
+            # requires byte-range safety through _valid_snapshot and an
+            # exact current-device identity match; otherwise baseline stays
             # None and restore goes dark (#32: 1,263 discards measured
             # 2026-07-29).
             last = state.get("last_baseline")
             if (_valid_snapshot(last)
+                    and state.get("last_baseline_device") == device_identity
                     and not _looks_like_signal(last)):
                 state["baseline"] = last
                 log(f"set {name}: snapshot matches a signal pattern, "
@@ -530,6 +570,7 @@ def _apply_state(kb, state, name, session, pattern, owner_prefix,
         else:
             state["baseline"] = snap
             state["last_baseline"] = snap
+            state["last_baseline_device"] = device_identity
     if name == "waiting":
         aliases = set(owner_aliases)
         owners = [owner for owner in _owners(state)
@@ -661,6 +702,11 @@ def _restore_locked(generation, session, owner_prefix=None, owner_aliases=(),
                 log(f"restore: released owner, {len(remaining)} still pending")
                 return True
     baseline = state.get("baseline")
+    if (baseline is not None
+            and (not _valid_snapshot(baseline)
+                 or state.get("last_baseline_device") != _device_identity())):
+        log("restore: baseline rejected (invalid or from another device)")
+        baseline = None
     mode = load_config().get("restore", "baseline")
     try:
         with via.Keyboard() as kb:
@@ -702,6 +748,8 @@ def _restore_locked(generation, session, owner_prefix=None, owner_aliases=(),
                "baseline": None}
     if "last_baseline" in state:
         cleared["last_baseline"] = state["last_baseline"]
+        if "last_baseline_device" in state:
+            cleared["last_baseline_device"] = state["last_baseline_device"]
     if _wake_reserved(state, time.time()):
         # An hour-long wake-up sleeper is still pending out there; keep its
         # reservation across the idle gap so the next waiting entry does

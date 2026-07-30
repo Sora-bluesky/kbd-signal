@@ -7,7 +7,10 @@ State file (%LOCALAPPDATA%/kbd-signal/state.json):
    "last_baseline": {...snapshot...},  (optional)
    "last_baseline_device": {"vendor_id": int|null,
                             "product_id": int|null,
-                            "product_match": str},  (optional)
+                            "product_match": str|null,
+                            "v3_channel": int,
+                            "effects": {"solid": int,
+                                        "breathing": int}},  (optional)
    "owners": ["product:session:agent", ...],
    "owner_seen": {"product:session:agent": {"wall": epoch_seconds,
                                             "mono": monotonic_seconds}, ...},
@@ -75,11 +78,27 @@ def patterns():
 
 
 def _device_identity():
-    """Configuration fields that select the current VIA device."""
+    """Configuration fields selecting and interpreting the VIA device.
+
+    ``reset_on_effect`` is intentionally excluded: it changes write timing,
+    not what stored effect, speed, or color values mean.
+
+    Accepted limitation: ``product_match`` is only a preferred filter because
+    VIA falls back to the first candidate. The fingerprint therefore proves
+    the configured selection, not the physical unit. The same pre-existing
+    ambiguity applies to baseline capture versus restore within one signal
+    and is outside this guard's scope.
+    """
     device = config.device()
     return {
         field: device.get(field)
-        for field in ("vendor_id", "product_id", "product_match")
+        for field in (
+            "vendor_id",
+            "product_id",
+            "product_match",
+            "v3_channel",
+            "effects",
+        )
     }
 
 
@@ -683,6 +702,11 @@ def _restore_locked(generation, session, owner_prefix=None, owner_aliases=(),
                 log(f"restore: released owner, {len(remaining)} still pending")
                 return True
     baseline = state.get("baseline")
+    if (baseline is not None
+            and (not _valid_snapshot(baseline)
+                 or state.get("last_baseline_device") != _device_identity())):
+        log("restore: baseline rejected (invalid or from another device)")
+        baseline = None
     mode = load_config().get("restore", "baseline")
     try:
         with via.Keyboard() as kb:

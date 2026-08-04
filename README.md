@@ -20,7 +20,7 @@ Before signaling, the current lighting (effect / speed / brightness / color) is 
 
 - Windows or macOS, Python 3.11+ (`hidapi` is the only dependency; its macOS wheel is self-contained via IOKit, so no Homebrew `hidapi` is needed)
 - Keychron K8 Pro connected via **USB cable with the rear switch set to "Cable"**. Raw HID is not available over Bluetooth — measured: in BT mode with the cable attached, the USB HID collections enumerate but the `0xFF60` raw interface does not
-- When the keyboard is absent (BT mode, unplugged), the hook-facing commands (`hook`, `set`, `restore`) silently no-op with exit 0 — hooks are never blocked. Diagnostic commands (`detect`, `test`, `raw-effect`) report the missing device and exit 1
+- When the keyboard is absent (BT mode, unplugged), the hook-facing commands (`hook`, `set`, `restore`) silently no-op with exit 0 — hooks are never blocked. Diagnostic commands (`setup`, `detect`, `test`, `raw-effect`) report the missing device and exit 1
 - Do not run the VIA app / Keychron Launcher at the same time (concurrent raw HID writes race)
 - Codex requires a version with lifecycle hooks; run `codex features list` and confirm that `hooks` is enabled
 - Concurrent Claude Code / Codex sessions and subagents are tracked independently; orange remains active while any approval is pending
@@ -59,6 +59,7 @@ Plain pip also works (`py -m pip install .`); in that case invoke the hooks with
 ## Usage
 
 ```
+kbd-signal setup                 # interactive first-run config for a new keyboard
 kbd-signal detect                # find the keyboard, show protocol & current lighting
 kbd-signal set <waiting|done|error>
 kbd-signal restore [--after N] [--gen G]
@@ -167,7 +168,18 @@ The protocol layer is not K8 Pro specific: VIA v2 value ids are fixed by the VIA
 }
 ```
 
-Workflow for a new board:
+Workflow for a new board: run **`kbd-signal setup`**. It picks the device, finds
+the VIA v3 custom channel, measures whether the firmware needs
+`reset_on_effect`, and asks you to look at the keyboard and say which effect
+index is steady and which pulses — the firmware's enabled-animation list is not
+readable over raw HID, so those two indices can only come from your eyes. It
+then writes the `device` block (keeping your previous `config.json` as
+`config.json.bak`). Finish with `kbd-signal test`.
+
+`setup` refuses to run while a signal is showing, since it captures the current
+lighting to restore afterwards.
+
+By hand instead:
 
 1. `kbd-signal detect --all` — list every raw-HID (0xFF60) device and copy its VID/PID into `config.json`
 2. `kbd-signal raw-effect <n>` — step through effect indices until you find solid/breathing, then set `effects`

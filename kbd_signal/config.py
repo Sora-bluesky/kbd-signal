@@ -24,8 +24,12 @@ it per keyboard only when `done` flashes or sticks red; otherwise leave it off
 and color/brightness are written directly with no dark hold. The Keychron
 Q1 HE 8K is one board known to need it.
 
-Workflow for a new keyboard: `kbd-signal detect --all` to find VID/PID,
-then `kbd-signal raw-effect <n>` to probe its effect indices.
+Workflow for a new keyboard: `kbd-signal setup` walks the detectable half
+(VID/PID, product string, v3 channel, reset_on_effect) and asks which effect
+index looks steady and which pulses -- the firmware's enabled-animation list
+is not readable over this protocol, so those two indices can only come from
+looking at the keyboard. `kbd-signal detect --all` and `raw-effect <n>` remain
+for doing it by hand.
 """
 
 import json
@@ -70,3 +74,22 @@ def load():
 
 def device():
     return load()["device"]
+
+
+def save(cfg):
+    """Write config.json atomically, keeping one .bak generation.
+
+    config.json is a hand-edited file, so `kbd-signal setup` never clobbers it
+    in place: the previous contents move to config.json.bak and the new file
+    lands via os.replace, same as states.save_state.
+    """
+    os.makedirs(STATE_DIR, exist_ok=True)
+    try:
+        os.replace(CONFIG_FILE, CONFIG_FILE + ".bak")
+    except OSError:
+        pass  # no previous config to keep
+    tmp = CONFIG_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, indent=2)
+        f.write("\n")
+    os.replace(tmp, CONFIG_FILE)

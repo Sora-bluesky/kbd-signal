@@ -78,6 +78,56 @@ def find_device_path(dev_cfg=None):
     return candidates[0]["path"]
 
 
+def probe_channel(kb, candidates=(3, 0, 1, 2, 4, 5, 6, 7)):
+    """Find a VIA v3 custom channel that answers an rgb_matrix GET.
+
+    Only meaningful on protocol >= 11. Tries the Keychron default (3) first.
+    Sets kb._channel to the winner and returns it; on total silence the
+    original channel is left in place and None is returned.
+    """
+    original = kb._channel
+    for channel in candidates:
+        kb._channel = channel
+        try:
+            kb.get_value(VALUE_BRIGHTNESS, tries=2)
+            return channel
+        except OSError:
+            continue
+    kb._channel = original
+    return None
+
+
+# Seed values for probe_reset_on_effect: a hue that is not the reset's hue 0
+# and a brightness that is not the reset's full 255, so the snap-back is
+# distinguishable from what was on the board already.
+PROBE_HUE = 85     # green
+PROBE_BRIGHTNESS = 120
+
+
+def probe_reset_on_effect(kb, effect, window=0.3, settle=0.02):
+    """Whether this firmware forces color/brightness shortly after an EFFECT
+    change -- the quirk `reset_on_effect` compensates for (see set_color).
+
+    Seeds a known state, changes the effect, then watches for the reset's
+    signature (hue snapping to 0 or brightness to full) for `window` seconds.
+    `effect` must differ from the current one or nothing triggers.
+    """
+    kb.set_value(VALUE_BRIGHTNESS, PROBE_BRIGHTNESS)
+    kb.set_value(VALUE_COLOR, PROBE_HUE, 255)
+    kb.set_value(VALUE_EFFECT, effect)
+    deadline = time.monotonic() + window
+    while time.monotonic() < deadline:
+        time.sleep(settle)
+        try:
+            hue = kb.get_value(VALUE_COLOR, 2)[0]
+            brightness = kb.get_value(VALUE_BRIGHTNESS)[0]
+        except OSError:
+            continue  # a dropped read is not evidence either way
+        if hue == 0 or brightness == 255:
+            return True
+    return False
+
+
 class Keyboard:
     def __init__(self, dev_cfg=None):
         import hid

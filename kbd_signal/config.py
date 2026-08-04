@@ -82,14 +82,20 @@ def save(cfg):
     config.json is a hand-edited file, so `kbd-signal setup` never clobbers it
     in place: the previous contents move to config.json.bak and the new file
     lands via os.replace, same as states.save_state.
+
+    Order matters. The new content is written in full before the old file is
+    rotated away, so a failure while writing (Ctrl-C, full disk, or on Windows a
+    concurrent hook holding a handle open) leaves config.json untouched. Rotating
+    first would open a window with no config.json at all, and load() would fall
+    back to the K8 Pro defaults without saying so.
     """
     os.makedirs(STATE_DIR, exist_ok=True)
-    try:
-        os.replace(CONFIG_FILE, CONFIG_FILE + ".bak")
-    except OSError:
-        pass  # no previous config to keep
     tmp = CONFIG_FILE + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(cfg, f, indent=2)
         f.write("\n")
+    try:
+        os.replace(CONFIG_FILE, CONFIG_FILE + ".bak")
+    except OSError:
+        pass  # no previous config to keep
     os.replace(tmp, CONFIG_FILE)

@@ -196,6 +196,18 @@ class SaveTests(unittest.TestCase):
         self.assertEqual(self._read("config.json.bak")["device"]["product_match"],
                          "first")
 
+    def test_a_failed_write_leaves_the_previous_config_intact(self):
+        """The .bak rotation must not run before the new content is on disk.
+        Rotating first leaves a window with no config.json at all, and load()
+        would silently fall back to the K8 Pro defaults -- on another board that
+        means product_match stops matching and find_device_path picks whatever
+        enumerated first (a Link-KM dock, say)."""
+        config.save({"device": {"product_match": "first"}})
+        with mock.patch("builtins.open", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                config.save({"device": {"product_match": "second"}})
+        self.assertEqual(self._read()["device"]["product_match"], "first")
+
     def test_first_write_needs_no_previous_file(self):
         config.save({"device": {}})
         self.assertFalse(os.path.exists(

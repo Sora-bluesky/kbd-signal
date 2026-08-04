@@ -11,7 +11,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from kbd_signal import cli, config, via
+from kbd_signal import config, setup, via
 
 
 def _kb():
@@ -98,7 +98,7 @@ class InterviewTests(unittest.TestCase):
         kb = _kb()
         kb.apply = mock.Mock()
         with mock.patch("builtins.input", side_effect=answers):
-            return cli._interview(kb), kb
+            return setup._interview(kb), kb
 
     def test_qmk_default_order_ends_in_two_questions(self):
         found, kb = self._run(["s", "p"])
@@ -122,7 +122,7 @@ class InterviewTests(unittest.TestCase):
         kb = _kb()
         kb.apply = mock.Mock()
         with mock.patch("builtins.input", side_effect=EOFError):
-            self.assertIsNone(cli._interview(kb))
+            self.assertIsNone(setup._interview(kb))
 
     def test_reprompts_on_junk(self):
         found, _ = self._run(["x", "", "s", "p"])
@@ -132,8 +132,8 @@ class InterviewTests(unittest.TestCase):
         kb = _kb()
         kb.apply = mock.Mock()
         with mock.patch("builtins.input",
-                        side_effect=["n"] * len(cli.EFFECT_CANDIDATES)):
-            self.assertIsNone(cli._interview(kb))
+                        side_effect=["n"] * len(setup.EFFECT_CANDIDATES)):
+            self.assertIsNone(setup._interview(kb))
 
 
 class ChooseDeviceTests(unittest.TestCase):
@@ -144,15 +144,15 @@ class ChooseDeviceTests(unittest.TestCase):
 
     def test_single_device_asks_nothing(self):
         with mock.patch("builtins.input", side_effect=AssertionError("asked")):
-            self.assertIs(cli._choose_device(self.DEVS[:1]), self.DEVS[0])
+            self.assertIs(setup._choose_device(self.DEVS[:1]), self.DEVS[0])
 
     def test_picks_by_number(self):
         with mock.patch("builtins.input", return_value="2"):
-            self.assertIs(cli._choose_device(self.DEVS), self.DEVS[1])
+            self.assertIs(setup._choose_device(self.DEVS), self.DEVS[1])
 
     def test_rejects_out_of_range(self):
         with mock.patch("builtins.input", side_effect=["0", "3", "1"]):
-            self.assertIs(cli._choose_device(self.DEVS), self.DEVS[0])
+            self.assertIs(setup._choose_device(self.DEVS), self.DEVS[0])
 
 
 class SaveTests(unittest.TestCase):
@@ -211,15 +211,26 @@ class SaveTests(unittest.TestCase):
 
 class SetupGuardTests(unittest.TestCase):
     def test_refuses_while_a_signal_is_showing(self):
-        with mock.patch.object(cli.states, "is_active", return_value=True), \
+        with mock.patch.object(setup.states, "is_active", return_value=True), \
              mock.patch.object(via, "enumerate_raw_hid",
                                side_effect=AssertionError("touched device")):
-            self.assertEqual(cli.cmd_setup(None), 1)
+            self.assertEqual(setup.run(), 1)
 
     def test_reports_no_device(self):
-        with mock.patch.object(cli.states, "is_active", return_value=False), \
+        with mock.patch.object(setup.states, "is_active", return_value=False), \
              mock.patch.object(via, "enumerate_raw_hid", return_value=[]):
-            self.assertEqual(cli.cmd_setup(None), 1)
+            self.assertEqual(setup.run(), 1)
+
+
+class DelegationTests(unittest.TestCase):
+    """cli.cmd_setup is a thin delegate, like cmd_hook. Extracting this module
+    out of cli.py put that wiring at risk and nothing else covers it."""
+
+    def test_cmd_setup_returns_the_exit_code_from_run(self):
+        from kbd_signal import cli
+        with mock.patch.object(setup, "run", return_value=7) as run:
+            self.assertEqual(cli.cmd_setup(None), 7)
+        run.assert_called_once_with()
 
 
 if __name__ == "__main__":

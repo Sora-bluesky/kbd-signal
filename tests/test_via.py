@@ -163,9 +163,12 @@ class SettleBrightnessTests(unittest.TestCase):
     """
 
     @staticmethod
-    def _kb():
+    def _kb(v3=False):
+        # #34 was measured on a K8 Pro on stock protocol-9 firmware, so these
+        # are v2 boards: the read-back is lossless there and is kept.
         kb = via.Keyboard.__new__(via.Keyboard)
         kb._reset_on_effect = True
+        kb._v3 = v3
         return kb
 
     def test_converges_when_first_writes_are_swallowed(self):
@@ -271,6 +274,97 @@ class SettleBrightnessTests(unittest.TestCase):
         # unclamped final sleep would push past this.
         self.assertLessEqual(now[0], 2.05)
 
+
+
+class SettleBrightnessV3Tests(unittest.TestCase):
+    """On VIA v3 the brightness read-back cannot confirm anything.
+
+    quantum/via.c stores scale8(value, RGB_MATRIX_MAXIMUM_BRIGHTNESS) -- an
+    (i * sc) / 256 divide -- and reads back val * 255 / MAXIMUM_BRIGHTNESS. The
+    divisors differ, so the round trip is not the identity by construction.
+    Measured on a Q1 HE 8K (protocol 13): 44 -> 42, 120 -> 119, 0 and 255 exact.
+    """
+
+    @staticmethod
+    def _kb():
+        kb = via.Keyboard.__new__(via.Keyboard)
+        kb._reset_on_effect = True
+        kb._v3 = True
+        return kb
+
+    @staticmethod
+    def _lossy_reader(store):
+        """Read-back as measured: one or two lower, exact at 0 and 255."""
+        def get_value(_vid, length=1, tries=6):
+            v = store["brightness"]
+            return [v if v in (0, 255) else max(0, v - 1)]
+        return get_value
+
+    def test_succeeds_although_the_read_never_equals_the_write(self):
+        kb = self._kb()
+        store = {"brightness": 0}
+        kb.set_value = lambda _vid, *data: store.update(brightness=data[0])
+        kb.get_value = self._lossy_reader(store)
+        self.assertTrue(via.Keyboard.settle_brightness(kb, 120, settle=0, hold=0))
+        self.assertEqual(store["brightness"], 120)
+
+    def test_never_reads_back_so_it_cannot_burn_the_budget(self):
+        """The bug being fixed: because the read can never equal the write, the
+        loop spun the full 1.50 s per restore with the state lock held and ended
+        in a False that was not a real failure. Pinned without a clock: on v3 no
+        confirmation read happens at all, and the early True proves the loop did
+        not fall through to the budget-exhausted return."""
+        kb = self._kb()
+        store = {"brightness": 0}
+        reads = []
+
+        def get_value(_vid, length=1, tries=6):
+            reads.append(store["brightness"])
+            return [max(0, store["brightness"] - 1)]
+
+        kb.set_value = lambda _vid, *data: store.update(brightness=data[0])
+        kb.get_value = get_value
+        self.assertTrue(via.Keyboard.settle_brightness(kb, 120, settle=0, hold=0))
+        self.assertEqual(reads, [], "v3 must not attempt a confirmation read")
+
+    def test_v2_still_confirms_by_read_back(self):
+        """Backward compatibility: v2 scales by RGBLIGHT_LIMIT_VAL / 255 in both
+        directions, lossless at QMK's default 255, and v2 is where #34 was
+        measured -- so the confirmation stays."""
+        kb = self._kb()
+        kb._v3 = False
+        store = {"brightness": 0}
+        reads = []
+
+        def get_value(_vid, length=1, tries=6):
+            reads.append(store["brightness"])
+            return [store["brightness"]]
+
+        kb.set_value = lambda _vid, *data: store.update(brightness=data[0])
+        kb.get_value = get_value
+        self.assertTrue(via.Keyboard.settle_brightness(kb, 120, settle=0, hold=0))
+        self.assertEqual(reads, [120], "v2 must still verify the write")
+
+    def test_still_rewrites_across_the_revert_window(self):
+        """The rewrites are the whole #34 protection now, so they must outlive
+        the window rather than being skipped along with the read-back."""
+        kb = self._kb()
+        writes = []
+        kb.set_value = lambda _vid, *data: writes.append(data[0])
+        kb.get_value = lambda *_a, **_kw: [0]
+        via.Keyboard.settle_brightness(kb, 77, settle=0.01, hold=0.05)
+        self.assertGreater(len(writes), 1)
+        self.assertEqual(set(writes), {77})
+
+    def test_write_errors_are_swallowed_so_a_hook_never_fails(self):
+        kb = self._kb()
+
+        def set_value(*_a):
+            raise OSError("device gone")
+
+        kb.set_value = set_value
+        kb.get_value = lambda *_a, **_kw: [0]
+        self.assertTrue(via.Keyboard.settle_brightness(kb, 5, settle=0, hold=0))
 
 if __name__ == "__main__":
     unittest.main()

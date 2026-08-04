@@ -65,31 +65,63 @@ class ProbeResetOnEffectTests(unittest.TestCase):
         self.assertFalse(via.probe_reset_on_effect(kb, 1, window=0.02, settle=0))
 
 
-class ProbeChannelTests(unittest.TestCase):
-    def test_prefers_the_default_channel(self):
+class VerifyChannelTests(unittest.TestCase):
+    """verify_channel confirms the configured channel by round-trip. It does not
+    search: a write to an unhandled channel is not inert on real firmware (see
+    via.verify_channel), so guessing is worse than reporting."""
+
+    @staticmethod
+    def _kb(live=True, echo_unknown=False, speed=127):
         kb = _kb()
-        kb.get_value = mock.Mock(return_value=[200])
-        self.assertEqual(via.probe_channel(kb), 3)
-        self.assertEqual(kb._channel, 3)
+        store = {"speed": speed}
 
-    def test_walks_to_a_channel_that_answers(self):
-        kb = _kb()
-        answers = {1: [200]}
+        def get_value(_vid, length=1, **_kw):
+            if live:
+                return [store["speed"]]
+            if echo_unknown:
+                return [0] * length   # request echoed back: zeros, not silence
+            raise OSError("no response")
 
-        def get_value(*_a, **_kw):
-            if kb._channel not in answers:
-                raise OSError("no response")
-            return answers[kb._channel]
+        def set_value(_vid, *data):
+            if live:
+                store["speed"] = data[0]
 
-        kb.get_value = get_value
-        self.assertEqual(via.probe_channel(kb), 1)
-        self.assertEqual(kb._channel, 1)
+        kb.get_value, kb.set_value = get_value, set_value
+        return kb, store
 
-    def test_silence_returns_none_and_keeps_the_original(self):
-        kb = _kb()
-        kb.get_value = mock.Mock(side_effect=OSError("no response"))
-        self.assertIsNone(via.probe_channel(kb))
-        self.assertEqual(kb._channel, 3)
+    def test_confirms_a_channel_whose_writes_land(self):
+        kb, _ = self._kb(live=True)
+        self.assertTrue(via.verify_channel(kb))
+
+    def test_rejects_a_channel_that_answers_but_writes_nowhere(self):
+        """Measured on real hardware: channel 0 answers a brightness GET with
+        [0] on a board whose rgb_matrix lives on channel 3. A read-only probe
+        would accept it and every later write would vanish silently."""
+        kb, _ = self._kb(live=False, echo_unknown=True)
+        self.assertFalse(via.verify_channel(kb))
+
+    def test_rejects_a_silent_channel(self):
+        kb, _ = self._kb(live=False)
+        self.assertFalse(via.verify_channel(kb))
+
+    def test_restores_the_speed_it_probed_with(self):
+        """setup snapshots *after* this, so a leftover probe value would become
+        the user's baseline."""
+        kb, store = self._kb(live=True, speed=127)
+        via.verify_channel(kb)
+        self.assertEqual(store["speed"], 127)
+
+    def test_a_board_reading_zero_still_confirms(self):
+        """0 is what an echoed request reads back as, so the probe value must
+        differ from both the stored value and 0."""
+        kb, store = self._kb(live=True, speed=0)
+        self.assertTrue(via.verify_channel(kb))
+        self.assertEqual(store["speed"], 0)
+
+    def test_a_board_already_at_the_probe_value_still_confirms(self):
+        kb, store = self._kb(live=True, speed=1)
+        self.assertTrue(via.verify_channel(kb))
+        self.assertEqual(store["speed"], 1)
 
 
 class InterviewTests(unittest.TestCase):

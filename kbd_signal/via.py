@@ -78,23 +78,45 @@ def find_device_path(dev_cfg=None):
     return candidates[0]["path"]
 
 
-def probe_channel(kb, candidates=(3, 0, 1, 2, 4, 5, 6, 7)):
-    """Find a VIA v3 custom channel that answers an rgb_matrix GET.
+def verify_channel(kb):
+    """Round-trip the configured v3 channel: do writes actually land?
 
-    Only meaningful on protocol >= 11. Tries the Keychron default (3) first.
-    Sets kb._channel to the winner and returns it; on total silence the
-    original channel is left in place and None is returned.
+    A GET being answered is not proof. Measured on a Keychron Q1 HE 8K
+    (protocol 13, rgb_matrix on channel 3): channel 0 answers a brightness GET
+    with `[0]` while channels 5 and 7 stay silent. So a read-only probe can
+    accept a channel that drives nothing, and because set_value ignores a
+    missing echo every later write would then vanish without a word.
+
+    Probes SPEED, not brightness. A VIA v3 brightness read-back cannot equal what
+    was written: quantum/via.c stores scale8(value, RGB_MATRIX_MAXIMUM_BRIGHTNESS)
+    -- an (i * sc) / 256 divide -- and reads back val * 255 / MAXIMUM_BRIGHTNESS,
+    so the round trip is not the identity by construction (#56). Measured on that
+    board: 44 -> 42, 120 -> 119, 52 -> 52, exact only at 0 and 255. Speed and
+    color have no such scaling and round-trip exactly. Speed is also invisible on
+    a static effect, so a board mid-probe does not flicker.
+
+    This verifies rather than searches. An earlier version walked candidate
+    channels writing to each, which the simulator was happy with and real
+    hardware was not: probing channel 0 left that board at effect 5 /
+    brightness 255 (a write to an unhandled channel is not inert -- the value id
+    means something else there) and wedged the HID handle into `read error`.
+    Guessing by writing to arbitrary channels is not worth it when the value is
+    published in the board's VIA definition as id_qmk_rgb_matrix_channel.
+
+    Restores the speed it probed with: the caller snapshots *after* this, so a
+    leftover probe value would be captured as the user's baseline. The probe
+    value is never 0, because a channel that echoes the request back reads as
+    zeros and would otherwise confirm itself.
     """
-    original = kb._channel
-    for channel in candidates:
-        kb._channel = channel
-        try:
-            kb.get_value(VALUE_BRIGHTNESS, tries=2)
-            return channel
-        except OSError:
-            continue
-    kb._channel = original
-    return None
+    try:
+        before = kb.get_value(VALUE_SPEED, tries=2)[0]
+        probe = 1 if before != 1 else 2
+        kb.set_value(VALUE_SPEED, probe)
+        confirmed = kb.get_value(VALUE_SPEED, tries=2)[0] == probe
+        kb.set_value(VALUE_SPEED, before)  # restore either way
+        return confirmed
+    except OSError:
+        return False
 
 
 # Seed values for probe_reset_on_effect: a hue that is not the reset's hue 0

@@ -111,12 +111,17 @@ def run():
     with via.Keyboard(dev_cfg) as kb:
         channel = dev_cfg["v3_channel"]
         if kb.protocol >= 11:
-            channel = via.probe_channel(kb)
-            if channel is None:
-                print("kbd-signal: no VIA v3 custom channel answered; this "
-                      "board may not expose rgb_matrix.", file=sys.stderr)
+            if not via.verify_channel(kb):
+                print(f"kbd-signal: custom channel {channel} does not drive "
+                      "this board — a write did not read back.\n"
+                      "Set \"v3_channel\" in config.json to the board's "
+                      "id_qmk_rgb_matrix_channel (from its VIA definition) and "
+                      "run setup again. Guessing it here would mean writing to "
+                      "channels that mean something else on your firmware.",
+                      file=sys.stderr)
                 return 1
-            print(f"VIA protocol {kb.protocol} (v3), custom channel {channel}")
+            print(f"VIA protocol {kb.protocol} (v3), custom channel {channel} "
+                  "(write confirmed)")
         else:
             print(f"VIA protocol {kb.protocol} (v2 lighting)")
 

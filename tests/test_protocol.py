@@ -205,5 +205,63 @@ class SettleBrightnessTests(unittest.TestCase):
         self.assertEqual(dev.values[via.VALUE_BRIGHTNESS], 77)
 
 
+class BrightnessRoundTripTests(unittest.TestCase):
+    """VIA's brightness round-trip is lossy by construction.
+
+    quantum/via.c stores scale8(value, RGB_MATRIX_MAXIMUM_BRIGHTNESS) -- an
+    (i * sc) / 256 divide -- and reads back val * 255 / MAXIMUM_BRIGHTNESS. The
+    two directions do not use the same divisor, so a written brightness does not
+    come back. Modelling that is what makes #56 reproducible with no hardware:
+    any code confirming a brightness write by comparing the read to what it wrote
+    is wrong on VIA v3, and until now nothing in CI could say so.
+
+    Deliberately separate from the fix (#57): these assert what the protocol
+    does, not what kbd-signal decides about it, so they hold either way.
+    """
+
+    def test_a_written_brightness_does_not_read_back(self):
+        dev = fake_hid.FakeViaDevice(protocol=13, max_brightness=255)
+        with fake_hid.attached(dev):
+            with _open(dev) as kb:
+                kb.set_value(via.VALUE_BRIGHTNESS, 120)
+                self.assertNotEqual(kb.get_value(via.VALUE_BRIGHTNESS), [120])
+
+    def test_the_loss_is_rounding_not_quantisation(self):
+        """Distinct writes stay distinct on read-back, so this is two truncations
+        rather than a coarse level scale -- matching the sweep measured on a
+        Q1 HE 8K (65 distinct reads for 65 distinct writes, deltas 0 to -2)."""
+        written = list(range(0, 256, 4))
+        dev = fake_hid.FakeViaDevice(protocol=13, max_brightness=255)
+        with fake_hid.attached(dev):
+            with _open(dev) as kb:
+                reads = []
+                for value in written:
+                    kb.set_value(via.VALUE_BRIGHTNESS, value)
+                    reads.append(kb.get_value(via.VALUE_BRIGHTNESS)[0])
+        self.assertEqual(len(set(reads)), len(reads), "resolution was lost")
+        self.assertTrue(all(0 <= w - r <= 2 for w, r in zip(written, reads)),
+                        reads)
+
+    def test_zero_round_trips_exactly(self):
+        """Which is why this went unnoticed: a baseline of 0 with signals at full
+        brightness only ever exercises the ends, where the round trip is exact."""
+        dev = fake_hid.FakeViaDevice(protocol=13, max_brightness=255)
+        with fake_hid.attached(dev):
+            with _open(dev) as kb:
+                kb.set_value(via.VALUE_BRIGHTNESS, 0)
+                self.assertEqual(kb.get_value(via.VALUE_BRIGHTNESS), [0])
+
+    def test_v2_round_trips_exactly_so_a_read_back_check_is_sound_there(self):
+        """v2 scales by RGBLIGHT_LIMIT_VAL / 255 both ways, lossless at QMK's
+        default limit -- and v2 is where the #34 revert was measured, on a
+        K8 Pro."""
+        dev = fake_hid.FakeViaDevice(protocol=9)
+        with fake_hid.attached(dev):
+            with _open(dev) as kb:
+                kb.set_value(via.VALUE_BRIGHTNESS, 120)
+                self.assertEqual(kb.get_value(via.VALUE_BRIGHTNESS), [120])
+                self.assertTrue(kb.settle_brightness(120, settle=0, hold=0))
+
+
 if __name__ == "__main__":
     unittest.main()

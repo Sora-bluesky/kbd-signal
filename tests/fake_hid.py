@@ -50,7 +50,15 @@ class FakeViaDevice:
                   in set_color is exercised deterministically, with no clock.
     """
 
-    def __init__(self, protocol=13, channel=3, quirk_after=None, values=None):
+    def __init__(self, protocol=13, channel=3, quirk_after=None, values=None,
+                 max_brightness=None):
+        # max_brightness models VIA's lossy brightness round-trip: quantum/via.c
+        # stores scale8(value, RGB_MATRIX_MAXIMUM_BRIGHTNESS) -- an (i * sc) / 256
+        # divide -- and reads back val * 255 / MAXIMUM_BRIGHTNESS. The divisors
+        # differ, so a written brightness does not come back. None keeps the
+        # round trip exact, which is what VIA v2 does (both directions scale by
+        # RGBLIGHT_LIMIT_VAL / 255, lossless at QMK's default limit).
+        self.max_brightness = max_brightness
         self.protocol = protocol
         self.channel = channel
         self.values = {via.VALUE_BRIGHTNESS: 200, via.VALUE_EFFECT: 6,
@@ -119,12 +127,19 @@ class FakeViaDevice:
             return  # silence, exactly what a wrong channel or id gets
         name, data, header = decoded
         if cmd == via.CMD_CUSTOM_SET:
-            self.values[name] = list(data) if name == via.VALUE_COLOR else data[0]
+            if name == via.VALUE_COLOR:
+                self.values[name] = list(data)
+            elif name == via.VALUE_BRIGHTNESS and self.max_brightness:
+                self.values[name] = (data[0] * self.max_brightness) // 256
+            else:
+                self.values[name] = data[0]
             self._queue.append(header + list(data))  # firmware echoes the SET
             if name == via.VALUE_EFFECT and self._quirk_after is not None:
                 self._countdown = self._quirk_after
         elif cmd == via.CMD_CUSTOM_GET:
             stored = self.values[name]
+            if name == via.VALUE_BRIGHTNESS and self.max_brightness:
+                stored = (stored * 255) // self.max_brightness
             stored = list(stored) if isinstance(stored, list) else [stored]
             self._queue.append(header + stored)
 

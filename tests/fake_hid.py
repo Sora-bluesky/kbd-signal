@@ -51,7 +51,15 @@ class FakeViaDevice:
     """
 
     def __init__(self, protocol=13, channel=3, quirk_after=None, values=None,
-                 max_brightness=None):
+                 max_brightness=None, echo_unknown_channel=False):
+        # echo_unknown_channel is the behaviour that makes verify_channel
+        # necessary and that silence cannot express: a request for a channel the
+        # board does not implement comes back echoed, data bytes zeroed, so the
+        # channel looks alive to anything that only reads. Measured on a
+        # Q1 HE 8K whose rgb_matrix is channel 3: channels 5 and 7 stay silent,
+        # but channel 0 answers a brightness GET with [0]. v3 only -- VIA v2 has
+        # no channel byte to get wrong.
+        self.echo_unknown_channel = echo_unknown_channel
         # max_brightness models VIA's lossy brightness round-trip: quantum/via.c
         # stores scale8(value, RGB_MATRIX_MAXIMUM_BRIGHTNESS) -- an (i * sc) / 256
         # divide -- and reads back val * 255 / MAXIMUM_BRIGHTNESS. The divisors
@@ -124,7 +132,11 @@ class FakeViaDevice:
             return
         decoded = self._decode(payload)
         if decoded is None:
-            return  # silence, exactly what a wrong channel or id gets
+            if self.echo_unknown_channel and self._v3:
+                # The header matches what _request waits for, so the client
+                # reads this as a valid response carrying zeros.
+                self._queue.append(list(payload[:3]) + [0, 0])
+            return  # otherwise silence
         name, data, header = decoded
         if cmd == via.CMD_CUSTOM_SET:
             if name == via.VALUE_COLOR:

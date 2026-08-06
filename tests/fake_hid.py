@@ -57,8 +57,12 @@ class FakeViaDevice:
         # board does not implement comes back echoed, data bytes zeroed, so the
         # channel looks alive to anything that only reads. Measured on a
         # Q1 HE 8K whose rgb_matrix is channel 3: channels 5 and 7 stay silent,
-        # but channel 0 answers a brightness GET with [0]. v3 only -- VIA v2 has
-        # no channel byte to get wrong.
+        # but channel 0 answers a brightness GET with [0].
+        #
+        # Scoped to exactly that: an unknown *value id* on the right channel
+        # stays silent either way, because no measurement says otherwise and a
+        # model should not invent behaviour it has not seen. VIA v2 has no
+        # channel byte, so the flag does nothing there.
         self.echo_unknown_channel = echo_unknown_channel
         # max_brightness models VIA's lossy brightness round-trip: quantum/via.c
         # stores scale8(value, RGB_MATRIX_MAXIMUM_BRIGHTNESS) -- an (i * sc) / 256
@@ -114,8 +118,7 @@ class FakeViaDevice:
         """(value name, data bytes, response header) for a SET/GET payload, or
         None when the request is not for this device's channel."""
         if self._v3:
-            if payload[1] != self.channel:
-                return None  # a real board ignores another channel's traffic
+            # The channel was checked by the caller.
             name = _V3_NAMES.get(payload[2])
             header, rest = payload[:3], payload[3:]
         else:
@@ -130,13 +133,16 @@ class FakeViaDevice:
         if cmd == via.CMD_GET_PROTOCOL_VERSION:
             self._queue.append([cmd, self.protocol >> 8, self.protocol & 0xFF])
             return
-        decoded = self._decode(payload)
-        if decoded is None:
-            if self.echo_unknown_channel and self._v3:
+        if (cmd in (via.CMD_CUSTOM_SET, via.CMD_CUSTOM_GET)
+                and self._v3 and payload[1] != self.channel):
+            if self.echo_unknown_channel:
                 # The header matches what _request waits for, so the client
                 # reads this as a valid response carrying zeros.
                 self._queue.append(list(payload[:3]) + [0, 0])
-            return  # otherwise silence
+            return
+        decoded = self._decode(payload)
+        if decoded is None:
+            return  # unknown value id: silence, on either generation
         name, data, header = decoded
         if cmd == via.CMD_CUSTOM_SET:
             if name == via.VALUE_COLOR:

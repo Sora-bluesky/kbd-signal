@@ -385,6 +385,26 @@ class VerifyChannelTests(unittest.TestCase):
             with via.Keyboard(self._cfg(6)) as kb:
                 self.assertFalse(via.verify_channel(kb))
 
+    def test_an_unknown_value_id_stays_silent_on_the_right_channel(self):
+        """The flag models one measured behaviour -- an unowned *channel*
+        answering -- and must not invent an answer for an id nobody measured."""
+        for echo in (False, True):
+            dev = fake_hid.FakeViaDevice(protocol=13, channel=3,
+                                         echo_unknown_channel=echo)
+            with fake_hid.attached(dev):
+                with via.Keyboard(self._cfg(3)) as kb:
+                    kb._drain()
+                    kb._write(via.CMD_CUSTOM_GET, 3, 0x7E)  # no such value id
+                    self.assertEqual(kb._dev.read(64, 250), [], f"echo={echo}")
+
+    def test_v2_never_echoes_since_it_has_no_channel(self):
+        dev = fake_hid.FakeViaDevice(protocol=9, echo_unknown_channel=True)
+        with fake_hid.attached(dev):
+            with via.Keyboard(self._cfg(3)) as kb:
+                kb._drain()
+                kb._write(via.CMD_CUSTOM_GET, 0x7E)
+                self.assertEqual(kb._dev.read(64, 250), [])
+
     def test_the_probed_speed_is_restored_on_the_real_channel(self):
         """setup snapshots after this, so a leftover probe value would become
         the user's baseline."""

@@ -373,27 +373,22 @@ def _cancel_wake(state):
     state.pop("wake_boot", None)
 
 
+def _valid_byte(value):
+    return (isinstance(value, int) and not isinstance(value, bool)
+            and 0 <= value < 256)
+
+
 def _valid_snapshot(snap):
     """True when snap has the complete byte-safe shape for restoration."""
     if not isinstance(snap, dict):
         return False
-    for field in ("effect", "speed", "brightness"):
-        value = snap.get(field)
-        if (not isinstance(value, int) or isinstance(value, bool)
-                or not 0 <= value < 256):
-            return False
+    if not all(_valid_byte(snap.get(field))
+               for field in ("effect", "speed", "brightness")):
+        return False
     color = snap.get("color")
     return (isinstance(color, (list, tuple))
             and len(color) == 2
-            and all(isinstance(value, int)
-                    and not isinstance(value, bool)
-                    and 0 <= value < 256
-                    for value in color))
-
-
-def _valid_byte(value):
-    return (isinstance(value, int) and not isinstance(value, bool)
-            and 0 <= value < 256)
+            and all(_valid_byte(value) for value in color))
 
 
 def _brightness_echo(kb, written, device_identity):
@@ -403,7 +398,11 @@ def _brightness_echo(kb, written, device_identity):
     and the next baseline is taken as read, which is the pre-#58 behaviour.
     """
     try:
-        readback = kb.get_value(via.VALUE_BRIGHTNESS)[0]
+        # tries=2, not get_value's default 6: this runs inside the state lock,
+        # and at 250 ms a try the default would add up to 1.5 s on a device that
+        # has stopped answering -- the same lock-held stall #57 removed. The
+        # pair is an optimisation; not getting it costs one cycle of drift.
+        readback = kb.get_value(via.VALUE_BRIGHTNESS, tries=2)[0]
     except OSError:
         return None
     return {"written": written, "readback": readback,
@@ -767,8 +766,10 @@ def _restore_locked(generation, session, owner_prefix=None, owner_aliases=(),
         baseline = None
     mode = load_config().get("restore", "baseline")
     echo = None
+    reached_device = False
     try:
         with via.Keyboard() as kb:
+            reached_device = True
             if mode == "off" or not baseline:
                 # Off mode always goes dark first (avoids a flash of the
                 # baseline effect), then puts the stored effect/color back so
@@ -814,6 +815,12 @@ def _restore_locked(generation, session, owner_prefix=None, owner_aliases=(),
                "baseline": None}
     if echo is not None:
         cleared["brightness_echo"] = echo
+    elif not reached_device and "brightness_echo" in state:
+        # The keyboard was never opened, so nothing was written and the pair
+        # from the last restore still describes what is on it. Once writing has
+        # started the old pair is stale and is dropped instead: the next
+        # baseline is then taken as read, which is the pre-#58 behaviour.
+        cleared["brightness_echo"] = state["brightness_echo"]
     if "last_baseline" in state:
         cleared["last_baseline"] = state["last_baseline"]
         if "last_baseline_device" in state:

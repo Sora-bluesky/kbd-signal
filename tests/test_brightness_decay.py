@@ -6,9 +6,12 @@ the next baseline and writing it back compounds: measured on a Q1 HE 8K, 120
 settles at 117 but 10 walks to 0 -- a dim backlight goes dark.
 """
 
+import os
+import tempfile
 import unittest
+from unittest import mock
 
-from kbd_signal import states
+from kbd_signal import states, via
 
 DEVICE = {"vendor_id": 0x3434, "product_id": 0x1012}
 OTHER_DEVICE = {"vendor_id": 0x3434, "product_id": 0x0192}
@@ -113,3 +116,64 @@ class DecayTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EchoCaptureTests(unittest.TestCase):
+    """How the pair is read, and when a stale one is dropped."""
+
+    def test_the_read_does_not_linger_under_the_state_lock(self):
+        """get_value's default of 6 tries is 1.5 s at 250 ms each, and this runs
+        with the lock held -- the stall #57 removed. The pair is optional."""
+        kb = mock.Mock()
+        kb.get_value.return_value = [119]
+        states._brightness_echo(kb, 120, {"vendor_id": 1})
+        self.assertEqual(kb.get_value.call_args.kwargs.get("tries"), 2)
+
+    def test_a_read_failure_yields_no_pair(self):
+        kb = mock.Mock()
+        kb.get_value.side_effect = OSError("gone")
+        self.assertIsNone(states._brightness_echo(kb, 120, {"vendor_id": 1}))
+
+
+class EchoPersistenceTests(unittest.TestCase):
+    """A pair describes the last thing written to the keyboard, so it survives
+    exactly the case where nothing was written."""
+
+    def setUp(self):
+        directory = tempfile.mkdtemp()
+        for name, value in (("STATE_DIR", directory),
+                            ("STATE_FILE", os.path.join(directory, "state.json")),
+                            ("ACTIVE_FLAG", os.path.join(directory, "active.flag")),
+                            ("LOG_FILE", os.path.join(directory, "log"))):
+            patch = mock.patch.object(states, name, value)
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    ECHO = {"written": 120, "readback": 119, "device": DEVICE}
+
+    def _restore_with(self, keyboard):
+        state = {"active": "waiting", "generation": 4, "owners": [],
+                 "baseline": _snap(119), "last_baseline": _snap(119),
+                 "last_baseline_device": states._device_identity(),
+                 "brightness_echo": self.ECHO}
+        states.save_state(state)
+        with mock.patch.object(states.via, "Keyboard", keyboard):
+            states._restore_locked(None, None)
+        return states.load_state()
+
+    def test_an_absent_keyboard_keeps_the_pair(self):
+        def missing():
+            raise via.DeviceNotFound("no raw HID interface")
+        self.assertEqual(self._restore_with(missing).get("brightness_echo"),
+                         self.ECHO)
+
+    def test_a_write_that_could_not_be_read_back_drops_it(self):
+        """Writing started, so the old pair no longer describes the device."""
+        kb = mock.MagicMock()
+        kb.__enter__ = mock.Mock(return_value=kb)
+        kb.__exit__ = mock.Mock(return_value=False)
+        kb.apply_snapshot.return_value = True
+        kb.settle_brightness.return_value = True
+        kb.get_value.side_effect = OSError("gone mid-restore")
+        self.assertIsNone(
+            self._restore_with(mock.Mock(return_value=kb)).get("brightness_echo"))

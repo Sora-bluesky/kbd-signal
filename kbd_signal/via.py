@@ -316,8 +316,36 @@ class Keyboard:
 
     def settle_brightness(self, value, settle=BRIGHTNESS_SETTLE,
                           hold=BRIGHTNESS_HOLD, budget=COLOR_BUDGET):
-        """Write brightness until a read-back confirms it stuck, within
-        `budget` seconds. A read inside the revert window is not proof:
+        """Write brightness until it sticks, within `budget` seconds.
+
+        On VIA v3 there is nothing to confirm against, so the rewrites *are* the
+        protection and the loop stops once the window has passed. VIA scales
+        brightness through the firmware's internal limit in both directions, and
+        on the rgb_matrix channel the two directions do not use the same divisor
+        (upstream QMK, quantum/via.c):
+
+            set: scale8(value, RGB_MATRIX_MAXIMUM_BRIGHTNESS)   # (i * sc) / 256
+            get: rgb_matrix_get_val() * 255 / RGB_MATRIX_MAXIMUM_BRIGHTNESS
+
+        so the round trip is not the identity by construction. Measured on a
+        Q1 HE 8K (protocol 13): 44 -> 42, 120 -> 119, 52 -> 52, with 0 and 255
+        exact -- deterministic, stable across repeated writes and over a second
+        of reads, all 8 bits of resolution preserved, so neither a settling lag
+        nor quantisation. An equality check there can only ever burn its budget:
+        1.50 s versus 0.43 s, measured, while _restore_locked holds the state
+        lock, and it logs a failure that is not one.
+
+        On VIA v2 the read-back is kept: both directions scale by
+        RGBLIGHT_LIMIT_VAL / 255, which is lossless at QMK's default limit of
+        255 -- and v2 is where the #34 revert was measured (a K8 Pro on stock
+        protocol-9 firmware, this project's default target), so the confirmation
+        demonstrably works there.
+
+        ponytail: a v2 board that lowers RGBLIGHT_LIMIT_VAL is lossy too and
+        would burn the budget like v3 does. Gate on the measured limit instead
+        of the protocol if such a board is ever reported.
+
+        A read inside the revert window is not proof:
         the firmware can confirm the new value at ~100 ms and still snap
         it back at ~150 ms, with reverts measured as late as ~300 ms
         (#34) — so for the first `hold` seconds the loop only rewrites,
@@ -344,6 +372,11 @@ class Keyboard:
             time.sleep(min(settle, max(0.0, deadline - time.monotonic())))
             if time.monotonic() < hold_until:
                 continue  # rewrite across the revert window; don't trust reads
+            if self._v3:
+                # Nothing to compare a read against (see above). The rewrites
+                # have outlived the revert window, which is the protection #34
+                # actually added; the read-back only decided when to stop.
+                return True
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 break

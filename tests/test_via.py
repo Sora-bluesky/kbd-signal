@@ -163,9 +163,12 @@ class SettleBrightnessTests(unittest.TestCase):
     """
 
     @staticmethod
-    def _kb():
+    def _kb(v3=False):
+        # #34 was measured on a K8 Pro on stock protocol-9 firmware, so these
+        # are v2 boards: the read-back is lossless there and is kept.
         kb = via.Keyboard.__new__(via.Keyboard)
         kb._reset_on_effect = True
+        kb._v3 = v3
         return kb
 
     def test_converges_when_first_writes_are_swallowed(self):
@@ -270,6 +273,7 @@ class SettleBrightnessTests(unittest.TestCase):
         # Total elapsed: at most the budget plus one in-flight write; an
         # unclamped final sleep would push past this.
         self.assertLessEqual(now[0], 2.05)
+
 
 
 if __name__ == "__main__":

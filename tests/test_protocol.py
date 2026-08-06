@@ -263,5 +263,81 @@ class BrightnessRoundTripTests(unittest.TestCase):
                 self.assertTrue(kb.settle_brightness(120, settle=0, hold=0))
 
 
+class SettleBrightnessTests(unittest.TestCase):
+    """settle_brightness across the two protocol generations (#56), driven
+    through the real byte path so the read-back the code sees comes from a model
+    of the firmware rather than from a mock told what to return.
+
+    Assertions are made on the packets the device received, which is the only
+    way to say "no confirmation read happened" without trusting a clock.
+    """
+
+    @staticmethod
+    def _brightness_gets(dev):
+        """CUSTOM_GET packets addressed at the brightness value id."""
+        wanted = [via.CMD_CUSTOM_GET, dev.channel,
+                  via._VALUE_IDS[via.VALUE_BRIGHTNESS][1]]
+        return [p for p in dev.packets if p[1:4] == wanted]
+
+    @staticmethod
+    def _brightness_sets(dev):
+        wanted = [via.CMD_CUSTOM_SET, dev.channel,
+                  via._VALUE_IDS[via.VALUE_BRIGHTNESS][1]]
+        return [p for p in dev.packets if p[1:4] == wanted]
+
+    def test_v3_succeeds_although_the_read_can_never_match(self):
+        dev = fake_hid.FakeViaDevice(protocol=13, max_brightness=255)
+        with fake_hid.attached(dev):
+            with _open(dev) as kb:
+                self.assertTrue(kb.settle_brightness(120, settle=0, hold=0))
+        self.assertNotEqual(dev.values[via.VALUE_BRIGHTNESS], 120,
+                            "the model should be lossy, or this proves nothing")
+
+    def test_v3_makes_no_confirmation_read(self):
+        """The bug: because the read could never equal the write, the loop spun
+        the full 1.50 s budget per restore with the state lock held and returned
+        a False that was not a failure. Pinned on the wire, with no clock."""
+        dev = fake_hid.FakeViaDevice(protocol=13, max_brightness=255)
+        with fake_hid.attached(dev):
+            with _open(dev) as kb:
+                dev.packets.clear()
+                self.assertTrue(kb.settle_brightness(120, settle=0, hold=0))
+        self.assertEqual(self._brightness_gets(dev), [],
+                         "v3 must not attempt a confirmation read")
+
+    def test_v3_still_rewrites_across_the_revert_window(self):
+        """The rewrites are what #34 actually added; only the read-back went."""
+        dev = fake_hid.FakeViaDevice(protocol=13, max_brightness=255)
+        with fake_hid.attached(dev):
+            with _open(dev) as kb:
+                dev.packets.clear()
+                kb.settle_brightness(77, settle=0.01, hold=0.05)
+        writes = self._brightness_sets(dev)
+        self.assertGreater(len(writes), 1)
+        self.assertEqual({p[4] for p in writes}, {77})
+
+    def test_v2_still_confirms_by_read_back(self):
+        """Backward compatibility: v2 scales by RGBLIGHT_LIMIT_VAL / 255 both
+        ways, lossless at QMK's default limit, and v2 is where #34 was measured
+        (a K8 Pro on stock protocol-9 firmware). The confirmation stays."""
+        dev = fake_hid.FakeViaDevice(protocol=9)
+        with fake_hid.attached(dev):
+            with _open(dev) as kb:
+                dev.packets.clear()
+                self.assertTrue(kb.settle_brightness(120, settle=0, hold=0))
+        wanted = [via.CMD_CUSTOM_GET, via._VALUE_IDS[via.VALUE_BRIGHTNESS][0]]
+        self.assertTrue([p for p in dev.packets if p[1:3] == wanted],
+                        "v2 must still verify the write")
+        self.assertEqual(dev.values[via.VALUE_BRIGHTNESS], 120)
+
+    def test_write_errors_are_swallowed_so_a_hook_never_fails(self):
+        dev = fake_hid.FakeViaDevice(protocol=13, max_brightness=255)
+        with fake_hid.attached(dev):
+            with _open(dev) as kb:
+                dev.write = lambda _packet: (_ for _ in ()).throw(
+                    OSError("device gone"))
+                self.assertTrue(kb.settle_brightness(5, settle=0, hold=0))
+
+
 if __name__ == "__main__":
     unittest.main()

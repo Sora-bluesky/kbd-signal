@@ -177,3 +177,55 @@ class EchoPersistenceTests(unittest.TestCase):
         kb.get_value.side_effect = OSError("gone mid-restore")
         self.assertIsNone(
             self._restore_with(mock.Mock(return_value=kb)).get("brightness_echo"))
+
+
+class SignalGuardOrderingTests(unittest.TestCase):
+    """The correction runs *after* the leftover-signal guard, and that ordering
+    is load-bearing.
+
+    _looks_like_signal matches only at the pattern's brightness (255 for every
+    signal) or 0. On a board where 255 does not round-trip -- the plain QMK
+    formula gives 254 -- the pair becomes (255, 254), and a reading of 254 with
+    a signal's effect and color is not a signal until the correction turns it
+    into one. Correcting first would hand the guard a value it never saw, throw
+    away a good baseline, and restore into the dark: exactly #32's failure mode,
+    induced by the fix for #58.
+    """
+
+    def setUp(self):
+        directory = tempfile.mkdtemp()
+        for name, value in (("STATE_DIR", directory),
+                            ("STATE_FILE", os.path.join(directory, "state.json")),
+                            ("ACTIVE_FLAG", os.path.join(directory, "active.flag")),
+                            ("LOG_FILE", os.path.join(directory, "log"))):
+            patch = mock.patch.object(states, name, value)
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def test_a_reading_the_correction_would_turn_into_a_signal_is_still_kept(self):
+        done = states.patterns()["done"]
+        raw = {"effect": done["effect"], "brightness": done["brightness"] - 1,
+               "speed": 127, "color": [done["hue"], done["sat"]]}
+        self.assertFalse(states._looks_like_signal(raw), "raw must not match")
+        corrected = {**raw, "brightness": done["brightness"]}
+        self.assertTrue(states._looks_like_signal(corrected),
+                        "corrected must match, or this test proves nothing")
+
+        identity = states._device_identity()
+        states.save_state({
+            "active": None, "generation": 1, "baseline": None,
+            "brightness_echo": {"written": done["brightness"],
+                                "readback": raw["brightness"],
+                                "device": identity}})
+
+        kb = mock.MagicMock()
+        kb.__enter__ = mock.Mock(return_value=kb)
+        kb.__exit__ = mock.Mock(return_value=False)
+        kb.snapshot.return_value = raw
+        kb.apply.return_value = True
+        with mock.patch.object(states.via, "Keyboard", mock.Mock(return_value=kb)):
+            states.set_state("done")
+
+        baseline = states.load_state()["baseline"]
+        self.assertIsNotNone(baseline, "the guard saw the corrected value")
+        self.assertEqual(baseline["brightness"], done["brightness"])

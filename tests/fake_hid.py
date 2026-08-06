@@ -116,7 +116,12 @@ class FakeViaDevice:
 
     def _decode(self, payload):
         """(value name, data bytes, response header) for a SET/GET payload, or
-        None when the request is not for this device's channel."""
+        None when the value id is not one this board implements.
+
+        Does *not* check the channel -- _dispatch does that before calling, so
+        it can tell an unowned channel (which may answer, see
+        echo_unknown_channel) from an unknown id (which never does).
+        """
         if self._v3:
             # The channel was checked by the caller.
             name = _V3_NAMES.get(payload[2])

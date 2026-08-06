@@ -38,6 +38,11 @@ def cmd_detect(args):
     return 0
 
 
+def cmd_setup(_args):
+    from . import setup
+    return setup.run()
+
+
 def cmd_set(args):
     ok = states.set_state(args.state)
     if not ok and sys.stdout.isatty():
@@ -85,6 +90,9 @@ def main(argv=None):
     p = argparse.ArgumentParser(prog="kbd-signal",
                                 description="Agent status -> VIA keyboard backlight")
     sub = p.add_subparsers(dest="command", required=True)
+
+    sub.add_parser("setup", help="interactive first-run config for a new keyboard"
+                   ).set_defaults(fn=cmd_setup)
 
     sp = sub.add_parser("detect", help="list device and current lighting")
     sp.add_argument("--all", action="store_true",

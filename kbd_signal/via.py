@@ -78,6 +78,86 @@ def find_device_path(dev_cfg=None):
     return candidates[0]["path"]
 
 
+def verify_channel(kb):
+    """Round-trip the configured v3 channel: do writes actually land?
+
+    A GET being answered is not proof. Measured on a Keychron Q1 HE 8K
+    (protocol 13, rgb_matrix on channel 3): channel 0 answers a brightness GET
+    with `[0]` while channels 5 and 7 stay silent. So a read-only probe can
+    accept a channel that drives nothing, and because set_value ignores a
+    missing echo every later write would then vanish without a word.
+
+    Probes SPEED, not brightness. A VIA v3 brightness read-back cannot equal what
+    was written: quantum/via.c stores scale8(value, RGB_MATRIX_MAXIMUM_BRIGHTNESS)
+    -- an (i * sc) / 256 divide -- and reads back val * 255 / MAXIMUM_BRIGHTNESS,
+    so the round trip is not the identity by construction (#56). Measured on that
+    board: 44 -> 42, 120 -> 119, 52 -> 52, exact only at 0 and 255. Speed and
+    color have no such scaling and round-trip exactly. Speed is also invisible on
+    a static effect, so a board mid-probe does not flicker.
+
+    This verifies rather than searches. An earlier version walked candidate
+    channels writing to each, which the simulator was happy with and real
+    hardware was not: probing channel 0 left that board at effect 5 /
+    brightness 255 (a write to an unhandled channel is not inert -- the value id
+    means something else there) and wedged the HID handle into `read error`.
+    Guessing by writing to arbitrary channels is not worth it when the value is
+    published in the board's VIA definition as id_qmk_rgb_matrix_channel.
+
+    Restores the speed it probed with on every path that read the original --
+    the caller snapshots *after* this, so a leftover probe value would be
+    captured as the user's baseline. The probe
+    value is never 0, because a channel that echoes the request back reads as
+    zeros and would otherwise confirm itself.
+    """
+    before = None
+    try:
+        before = kb.get_value(VALUE_SPEED, tries=2)[0]
+        probe = 1 if before != 1 else 2
+        kb.set_value(VALUE_SPEED, probe)
+        return kb.get_value(VALUE_SPEED, tries=2)[0] == probe
+    except OSError:
+        return False
+    finally:
+        # Restore on every path that got as far as reading the original,
+        # including the one where the confirming read raised.
+        if before is not None:
+            try:
+                kb.set_value(VALUE_SPEED, before)
+            except OSError:
+                pass
+
+
+# Seed values for probe_reset_on_effect: a hue that is not the reset's hue 0
+# and a brightness that is not the reset's full 255, so the snap-back is
+# distinguishable from what was on the board already.
+PROBE_HUE = 85     # green
+PROBE_BRIGHTNESS = 120
+
+
+def probe_reset_on_effect(kb, effect, window=0.3, settle=0.02):
+    """Whether this firmware forces color/brightness shortly after an EFFECT
+    change -- the quirk `reset_on_effect` compensates for (see set_color).
+
+    Seeds a known state, changes the effect, then watches for the reset's
+    signature (hue snapping to 0 or brightness to full) for `window` seconds.
+    `effect` must differ from the current one or nothing triggers.
+    """
+    kb.set_value(VALUE_BRIGHTNESS, PROBE_BRIGHTNESS)
+    kb.set_value(VALUE_COLOR, PROBE_HUE, 255)
+    kb.set_value(VALUE_EFFECT, effect)
+    deadline = time.monotonic() + window
+    while time.monotonic() < deadline:
+        time.sleep(settle)
+        try:
+            hue = kb.get_value(VALUE_COLOR, 2)[0]
+            brightness = kb.get_value(VALUE_BRIGHTNESS)[0]
+        except OSError:
+            continue  # a dropped read is not evidence either way
+        if hue == 0 or brightness == 255:
+            return True
+    return False
+
+
 class Keyboard:
     def __init__(self, dev_cfg=None):
         import hid

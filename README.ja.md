@@ -33,7 +33,7 @@ Claude Code / Codex のステータス(承認待ち・タスク完了・エラ�
 
 - **背面スイッチ Cable(有線)時のみ動作**。BT モードではケーブルを挿していても raw HID インターフェースが列挙されない(実機確認済み)
 - macOS では追加の権限やライブラリは不要(`hidapi` の macOS wheel は IOKit バックエンドで自己完結。`brew install hidapi` は不要)
-- キーボード未接続時、hook 系コマンド(`hook` / `set` / `restore`)は exit 0 で静かに no-op(hooks を絶対にブロックしない)。診断系(`detect` / `test` / `raw-effect`)は未検出を報告して exit 1
+- キーボード未接続時、hook 系コマンド(`hook` / `set` / `restore`)は exit 0 で静かに no-op(hooks を絶対にブロックしない)。診断系(`setup` / `detect` / `test` / `raw-effect`)は未検出を報告して exit 1
 - **VIA アプリ / Keychron Launcher と同時使用しない**(raw HID 書き込みが競合する)
 - Codex はライフサイクルフック対応版が必要。`codex features list` で `hooks` が有効か確認できる
 - Claude Code / Codex の複数セッションとサブエージェントを同時に追跡する。1件でも承認待ちが残っている間はオレンジを維持する
@@ -72,6 +72,7 @@ py -m pipx ensurepath   # 実行後、新しいターミナルを開く
 ## 使い方
 
 ```
+kbd-signal setup                 # 新しい機種の初期設定(対話)
 kbd-signal detect                # デバイス検出・現在の設定表示
 kbd-signal set <waiting|done|error>
 kbd-signal restore [--after N] [--gen G]
@@ -171,7 +172,13 @@ Codexには`SessionEnd`がないため、承認待ちの最中にアプリを強
 }
 ```
 
-新しい機種での手順: `kbd-signal detect --all` で VID/PID を調べて設定 → `kbd-signal raw-effect <n>` で solid/breathing の番号を特定して `effects` に設定 →(VIA v3 機なら)`v3_channel` を機種の VIA 定義に合わせる → `kbd-signal test`。RGB 非搭載機(単色バックライト)は色で状態を区別する設計のため対象外。
+新しい機種での手順: **`kbd-signal setup`** を実行してください。デバイスの選択、設定済みの VIA v3 カスタムチャネルが実際にそのボードを駆動しているかの検証、`reset_on_effect` が必要かの実測までを自動で行い、最後に「どの effect 番号が点きっぱなしで、どれが明滅するか」をキーボードを見て答えてもらいます。ファームの有効アニメーション一覧は raw HID から読めないため、この2つの番号だけは目視でしか決められません。回答後に `device` ブロックを書き込みます(既存の `config.json` は `config.json.bak` に退避)。最後に `kbd-signal test` で確認。
+
+チャネル検証に失敗した場合は、機種の VIA 定義にある `id_qmk_rgb_matrix_channel` の値を `config.json` の `v3_channel` に設定して `setup` を再実行してください。`setup` はその値を読みます。チャネルを推測して探索することはしません — 未対応チャネルへの書き込みは、そのファームでは別の意味を持つ値 id に着弾し得るためです。
+
+`setup` は signal 表示中には実行を拒否します(終了時に元へ戻すため、現在の照明を退避する必要があるので)。
+
+手作業でやる場合: `kbd-signal detect --all` で VID/PID を調べて設定 → `kbd-signal raw-effect <n>` で solid/breathing の番号を特定して `effects` に設定 →(VIA v3 機なら)`v3_channel` を機種の VIA 定義に合わせる → `kbd-signal test`。RGB 非搭載機(単色バックライト)は色で状態を区別する設計のため対象外。
 
 一部のファームは、エフェクト変更の約 50〜150ms 後に color(赤)と brightness(全開)をリセットします。多くの機種では起きないため、これは機種ごとのオプトイン方式の workaround です。`done` が赤くフラッシュ/固着する機種でのみ `"reset_on_effect": true` を設定してください。有効化すると、リセット窓の間 LED を暗く保ったまま色を確定させます。(既知の該当機種の一例が Keychron Q1 HE 8K です。)
 

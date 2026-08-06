@@ -109,7 +109,12 @@ class FramingTests(unittest.TestCase):
 
 class ValueRoundTripTests(unittest.TestCase):
     def _round_trip(self, protocol):
-        dev = fake_hid.FakeViaDevice(protocol=protocol)
+        # max_brightness=None on purpose: this covers framing and the value-id
+        # mapping, so the transport is idealised. Real v3 firmware scales
+        # brightness and 120 would come back 119 (see BrightnessRoundTripTests);
+        # folding that in here would make a framing regression read as an
+        # arithmetic one.
+        dev = fake_hid.FakeViaDevice(protocol=protocol, max_brightness=None)
         with fake_hid.attached(dev):
             with _open(dev) as kb:
                 kb.set_value(via.VALUE_BRIGHTNESS, 120)
@@ -219,12 +224,15 @@ class BrightnessRoundTripTests(unittest.TestCase):
     does, not what kbd-signal decides about it, so they hold either way.
     """
 
-    def test_a_written_brightness_does_not_read_back(self):
+    def test_a_written_brightness_reads_back_scaled(self):
+        """assertNotEqual([120]) used to pass on a device that ignored the write
+        entirely -- the untouched default 200 is also not 120. Assert the value
+        the scaling actually produces."""
         dev = fake_hid.FakeViaDevice(protocol=13, max_brightness=255)
         with fake_hid.attached(dev):
             with _open(dev) as kb:
                 kb.set_value(via.VALUE_BRIGHTNESS, 120)
-                self.assertNotEqual(kb.get_value(via.VALUE_BRIGHTNESS), [120])
+                self.assertEqual(kb.get_value(via.VALUE_BRIGHTNESS), [119])
 
     def test_the_loss_is_rounding_not_quantisation(self):
         """Distinct writes stay distinct on read-back, so this is two truncations
@@ -337,6 +345,112 @@ class SettleBrightnessTests(unittest.TestCase):
                 dev.write = lambda _packet: (_ for _ in ()).throw(
                     OSError("device gone"))
                 self.assertTrue(kb.settle_brightness(5, settle=0, hold=0))
+
+
+class VerifyChannelTests(unittest.TestCase):
+    """verify_channel against a board that answers a channel it does not drive.
+
+    This is the case the simulator could not express before: `_decode` returning
+    None modelled every wrong channel as silent, so the situation verify_channel
+    exists for -- an answer that proves nothing -- was untestable, while #51
+    measured it on real hardware (channel 0 answers with [0]; 5 and 7 do not).
+    """
+
+    @staticmethod
+    def _cfg(channel):
+        return {"vendor_id": 0x3434, "product_id": 0x1012,
+                "product_match": "Fake", "v3_channel": channel,
+                "reset_on_effect": False,
+                "effects": {"solid": 1, "breathing": 2}}
+
+    def test_an_echoing_wrong_channel_is_rejected(self):
+        """A read-only probe would accept this board on any channel. The write
+        round-trip is what tells them apart."""
+        dev = fake_hid.FakeViaDevice(protocol=13, channel=3,
+                                     echo_unknown_channel=True)
+        with fake_hid.attached(dev):
+            with via.Keyboard(self._cfg(6)) as kb:
+                self.assertFalse(via.verify_channel(kb))
+
+    def test_an_unowned_channel_answers_when_echoing(self):
+        """The distinguishing behaviour, and the reason verify_channel writes.
+
+        Asserting only that verify_channel rejects the channel is not enough:
+        it rejects a silent one too, so that assertion holds with this whole
+        mode removed. What must be pinned is that a *read* succeeds where it
+        would otherwise raise -- that is what fools a read-only probe.
+        """
+        dev = fake_hid.FakeViaDevice(protocol=13, channel=3,
+                                     echo_unknown_channel=True)
+        with fake_hid.attached(dev):
+            with via.Keyboard(self._cfg(6)) as kb:
+                self.assertEqual(kb.get_value(via.VALUE_BRIGHTNESS, tries=2), [0])
+
+    def test_a_write_to_an_unowned_channel_looks_like_it_worked(self):
+        """set_value ignores a missing echo, so on an echoing board it returns
+        normally while nothing lands -- the silent loss verify_channel exists to
+        catch."""
+        dev = fake_hid.FakeViaDevice(protocol=13, channel=3,
+                                     echo_unknown_channel=True)
+        with fake_hid.attached(dev):
+            with via.Keyboard(self._cfg(6)) as kb:
+                before = dict(dev.values)
+                kb.set_value(via.VALUE_SPEED, 42)      # raises nothing
+        self.assertEqual(dev.values, before)
+
+    def test_the_driving_channel_is_confirmed(self):
+        dev = fake_hid.FakeViaDevice(protocol=13, channel=3,
+                                     echo_unknown_channel=True)
+        with fake_hid.attached(dev):
+            with via.Keyboard(self._cfg(3)) as kb:
+                self.assertTrue(via.verify_channel(kb))
+
+    def test_a_silent_wrong_channel_is_also_rejected(self):
+        dev = fake_hid.FakeViaDevice(protocol=13, channel=3)
+        with fake_hid.attached(dev):
+            with via.Keyboard(self._cfg(6)) as kb:
+                self.assertFalse(via.verify_channel(kb))
+
+    def test_an_unknown_value_id_stays_silent_on_the_right_channel(self):
+        """The flag models one measured behaviour -- an unowned *channel*
+        answering -- and must not invent an answer for an id nobody measured."""
+        for echo in (False, True):
+            dev = fake_hid.FakeViaDevice(protocol=13, channel=3,
+                                         echo_unknown_channel=echo)
+            with fake_hid.attached(dev):
+                with via.Keyboard(self._cfg(3)) as kb:
+                    kb._drain()
+                    kb._write(via.CMD_CUSTOM_GET, 3, 0x7E)  # no such value id
+                    self.assertEqual(kb._dev.read(64, 250), [], f"echo={echo}")
+
+    def test_v2_never_echoes_since_it_has_no_channel(self):
+        dev = fake_hid.FakeViaDevice(protocol=9, echo_unknown_channel=True)
+        with fake_hid.attached(dev):
+            with via.Keyboard(self._cfg(3)) as kb:
+                kb._drain()
+                kb._write(via.CMD_CUSTOM_GET, 0x7E)
+                self.assertEqual(kb._dev.read(64, 250), [])
+
+    def test_the_probed_speed_is_restored_on_the_real_channel(self):
+        """setup snapshots after this, so a leftover probe value would become
+        the user's baseline."""
+        dev = fake_hid.FakeViaDevice(protocol=13, channel=3,
+                                     values={via.VALUE_SPEED: 170})
+        with fake_hid.attached(dev):
+            with via.Keyboard(self._cfg(3)) as kb:
+                via.verify_channel(kb)
+        self.assertEqual(dev.values[via.VALUE_SPEED], 170)
+
+    def test_nothing_is_written_to_a_channel_the_board_does_not_own(self):
+        """Writing to an unhandled channel is not inert on real firmware: #51
+        left a board at effect 5 / brightness 255 and wedged the HID handle."""
+        dev = fake_hid.FakeViaDevice(protocol=13, channel=3,
+                                     echo_unknown_channel=True)
+        with fake_hid.attached(dev):
+            with via.Keyboard(self._cfg(6)) as kb:
+                before = dict(dev.values)
+                via.verify_channel(kb)
+        self.assertEqual(dev.values, before)
 
 
 if __name__ == "__main__":

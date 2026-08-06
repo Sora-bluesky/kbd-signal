@@ -372,6 +372,32 @@ class VerifyChannelTests(unittest.TestCase):
             with via.Keyboard(self._cfg(6)) as kb:
                 self.assertFalse(via.verify_channel(kb))
 
+    def test_an_unowned_channel_answers_when_echoing(self):
+        """The distinguishing behaviour, and the reason verify_channel writes.
+
+        Asserting only that verify_channel rejects the channel is not enough:
+        it rejects a silent one too, so that assertion holds with this whole
+        mode removed. What must be pinned is that a *read* succeeds where it
+        would otherwise raise -- that is what fools a read-only probe.
+        """
+        dev = fake_hid.FakeViaDevice(protocol=13, channel=3,
+                                     echo_unknown_channel=True)
+        with fake_hid.attached(dev):
+            with via.Keyboard(self._cfg(6)) as kb:
+                self.assertEqual(kb.get_value(via.VALUE_BRIGHTNESS, tries=2), [0])
+
+    def test_a_write_to_an_unowned_channel_looks_like_it_worked(self):
+        """set_value ignores a missing echo, so on an echoing board it returns
+        normally while nothing lands -- the silent loss verify_channel exists to
+        catch."""
+        dev = fake_hid.FakeViaDevice(protocol=13, channel=3,
+                                     echo_unknown_channel=True)
+        with fake_hid.attached(dev):
+            with via.Keyboard(self._cfg(6)) as kb:
+                before = dict(dev.values)
+                kb.set_value(via.VALUE_SPEED, 42)      # raises nothing
+        self.assertEqual(dev.values, before)
+
     def test_the_driving_channel_is_confirmed(self):
         dev = fake_hid.FakeViaDevice(protocol=13, channel=3,
                                      echo_unknown_channel=True)

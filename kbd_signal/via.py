@@ -103,20 +103,28 @@ def verify_channel(kb):
     Guessing by writing to arbitrary channels is not worth it when the value is
     published in the board's VIA definition as id_qmk_rgb_matrix_channel.
 
-    Restores the speed it probed with: the caller snapshots *after* this, so a
-    leftover probe value would be captured as the user's baseline. The probe
+    Restores the speed it probed with on every path that read the original --
+    the caller snapshots *after* this, so a leftover probe value would be
+    captured as the user's baseline. The probe
     value is never 0, because a channel that echoes the request back reads as
     zeros and would otherwise confirm itself.
     """
+    before = None
     try:
         before = kb.get_value(VALUE_SPEED, tries=2)[0]
         probe = 1 if before != 1 else 2
         kb.set_value(VALUE_SPEED, probe)
-        confirmed = kb.get_value(VALUE_SPEED, tries=2)[0] == probe
-        kb.set_value(VALUE_SPEED, before)  # restore either way
-        return confirmed
+        return kb.get_value(VALUE_SPEED, tries=2)[0] == probe
     except OSError:
         return False
+    finally:
+        # Restore on every path that got as far as reading the original,
+        # including the one where the confirming read raised.
+        if before is not None:
+            try:
+                kb.set_value(VALUE_SPEED, before)
+            except OSError:
+                pass
 
 
 # Seed values for probe_reset_on_effect: a hue that is not the reset's hue 0

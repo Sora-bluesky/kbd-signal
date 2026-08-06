@@ -104,10 +104,15 @@ def run():
     if dev is None:
         return 1
 
+    # v3_channel comes from config: it is the one value setup cannot work out,
+    # and verify_channel's failure tells the user to set it there and re-run --
+    # which only helps if the re-run actually reads it. Everything else is either
+    # the device just chosen or something setup determines below.
     dev_cfg = {**config.DEFAULT_DEVICE,
                "vendor_id": dev["vendor_id"],
                "product_id": dev["product_id"],
-               "product_match": dev.get("product_string") or None}
+               "product_match": dev.get("product_string") or None,
+               "v3_channel": config.device()["v3_channel"]}
     with via.Keyboard(dev_cfg) as kb:
         channel = dev_cfg["v3_channel"]
         if kb.protocol >= 11:

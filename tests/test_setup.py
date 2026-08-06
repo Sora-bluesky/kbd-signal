@@ -100,6 +100,36 @@ class VerifyChannelTests(unittest.TestCase):
         kb, _ = self._kb(live=False, echo_unknown=True)
         self.assertFalse(via.verify_channel(kb))
 
+    def test_restores_even_when_the_confirming_read_raises(self):
+        """The probe value must not be left behind on the error path either:
+        setup snapshots after this, so a leftover becomes the user's baseline."""
+        kb = _kb()
+        store = {"speed": 127}
+        reads = [0]
+
+        def get_value(_vid, length=1, **_kw):
+            reads[0] += 1
+            if reads[0] == 1:
+                return [store["speed"]]
+            raise OSError("device went away mid-probe")
+
+        kb.get_value = get_value
+        kb.set_value = lambda _vid, *data: store.update(speed=data[0])
+        self.assertFalse(via.verify_channel(kb))
+        self.assertEqual(store["speed"], 127)
+
+    def test_a_restore_that_itself_fails_is_not_fatal(self):
+        kb = _kb()
+        kb.get_value = lambda *_a, **_kw: [127]
+        calls = [0]
+
+        def set_value(*_a):
+            calls[0] += 1
+            raise OSError("gone")
+
+        kb.set_value = set_value
+        self.assertFalse(via.verify_channel(kb))
+
     def test_rejects_a_silent_channel(self):
         kb, _ = self._kb(live=False)
         self.assertFalse(via.verify_channel(kb))
@@ -240,6 +270,26 @@ class SaveTests(unittest.TestCase):
                 config.save({"device": {"product_match": "second"}})
         self.assertEqual(self._read()["device"]["product_match"], "first")
 
+    def test_config_json_is_never_absent_even_if_the_swap_fails(self):
+        """The .bak is a copy, not a move, so the old file stays in place until
+        the final replace succeeds. Moving it aside first would leave a window
+        with no config.json -- and load() answers that with the K8 Pro defaults,
+        silently."""
+        config.save({"device": {"product_match": "first"}})
+        real_replace = os.replace
+
+        def fail_only_the_swap(src, dst):
+            # Let the .bak rotation through; break just the final swap-in, which
+            # is the window a move-then-write order would leave open.
+            if str(dst) == config.CONFIG_FILE:
+                raise OSError("swap failed")
+            return real_replace(src, dst)
+
+        with mock.patch("os.replace", side_effect=fail_only_the_swap):
+            with self.assertRaises(OSError):
+                config.save({"device": {"product_match": "second"}})
+        self.assertEqual(self._read()["device"]["product_match"], "first")
+
     def test_first_write_needs_no_previous_file(self):
         config.save({"device": {}})
         self.assertFalse(os.path.exists(
@@ -251,6 +301,47 @@ class SaveTests(unittest.TestCase):
         config.save({"device": {"vendor_id": "0x05ac", "product_match": None}})
         self.assertIn("product_match", self._read()["device"])
         self.assertIsNone(config.device()["product_match"])
+
+
+class ConfiguredChannelTests(unittest.TestCase):
+    """setup must read v3_channel from config.
+
+    verify_channel's failure tells the user to set it in config.json and re-run.
+    Building dev_cfg from DEFAULT_DEVICE alone pinned it to 3, so a board on any
+    other channel followed that advice straight back into the same error.
+    """
+
+    DEV = {"vendor_id": 0x3434, "product_id": 0x1012, "path": b"/dev/kbd",
+           "product_string": "Some Board"}
+
+    def _run_with_channel(self, channel):
+        captured = {}
+        kb = mock.MagicMock()
+        kb.protocol = 13
+        kb.__enter__ = mock.Mock(return_value=kb)
+        kb.__exit__ = mock.Mock(return_value=False)
+
+        def keyboard(dev_cfg):
+            captured.update(dev_cfg)
+            return kb
+
+        cfg = {**config.DEFAULT_DEVICE, "v3_channel": channel}
+        with mock.patch.object(setup.states, "is_active", return_value=False), \
+             mock.patch.object(config, "device", return_value=cfg), \
+             mock.patch.object(via, "enumerate_raw_hid", return_value=[self.DEV]), \
+             mock.patch.object(via, "Keyboard", side_effect=keyboard), \
+             mock.patch.object(via, "verify_channel", return_value=False):
+            code = setup.run()
+        return code, captured
+
+    def test_the_configured_channel_reaches_the_keyboard(self):
+        code, dev_cfg = self._run_with_channel(6)
+        self.assertEqual(code, 1)  # verify_channel said no, so setup stops
+        self.assertEqual(dev_cfg["v3_channel"], 6)
+
+    def test_the_default_still_applies_when_config_says_nothing(self):
+        _, dev_cfg = self._run_with_channel(config.DEFAULT_DEVICE["v3_channel"])
+        self.assertEqual(dev_cfg["v3_channel"], 3)
 
 
 class SetupGuardTests(unittest.TestCase):

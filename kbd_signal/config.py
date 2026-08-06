@@ -24,9 +24,10 @@ it per keyboard only when `done` flashes or sticks red; otherwise leave it off
 and color/brightness are written directly with no dark hold. The Keychron
 Q1 HE 8K is one board known to need it.
 
-Workflow for a new keyboard: `kbd-signal setup` walks the detectable half
-(VID/PID, product string, v3 channel, reset_on_effect) and asks which effect
-index looks steady and which pulses -- the firmware's enabled-animation list
+Workflow for a new keyboard: `kbd-signal setup` fills in the detectable half
+(VID/PID, product string, reset_on_effect), confirms the configured v3 channel
+really drives the board, and asks which effect index looks steady and which
+pulses -- the firmware's enabled-animation list
 is not readable over this protocol, so those two indices can only come from
 looking at the keyboard. `kbd-signal detect --all` and `raw-effect <n>` remain
 for doing it by hand.
@@ -34,6 +35,7 @@ for doing it by hand.
 
 import json
 import os
+import shutil
 
 from . import _platform
 
@@ -83,11 +85,12 @@ def save(cfg):
     in place: the previous contents move to config.json.bak and the new file
     lands via os.replace, same as states.save_state.
 
-    Order matters. The new content is written in full before the old file is
-    rotated away, so a failure while writing (Ctrl-C, full disk, or on Windows a
-    concurrent hook holding a handle open) leaves config.json untouched. Rotating
-    first would open a window with no config.json at all, and load() would fall
-    back to the K8 Pro defaults without saying so.
+    config.json is never absent, even for an instant. The replacement is written
+    in full first, then the previous contents are *copied* to .bak, and only the
+    final os.replace swaps it in. Moving the old file aside instead would leave a
+    window with no config.json -- and load() answers a missing file with the
+    K8 Pro defaults, silently, so a failure in that window would look like a
+    working config for the wrong keyboard.
     """
     os.makedirs(STATE_DIR, exist_ok=True)
     tmp = CONFIG_FILE + ".tmp"
@@ -95,7 +98,7 @@ def save(cfg):
         json.dump(cfg, f, indent=2)
         f.write("\n")
     try:
-        os.replace(CONFIG_FILE, CONFIG_FILE + ".bak")
+        shutil.copyfile(CONFIG_FILE, CONFIG_FILE + ".bak")
     except OSError:
         pass  # no previous config to keep
     os.replace(tmp, CONFIG_FILE)

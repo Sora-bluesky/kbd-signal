@@ -168,10 +168,10 @@ The protocol layer is not K8 Pro specific: VIA v2 value ids are fixed by the VIA
 }
 ```
 
-Workflow for a new board: run **`kbd-signal setup`**. It picks the device, finds
-the VIA v3 custom channel, measures whether the firmware needs
-`reset_on_effect`, and asks you to look at the keyboard and say which effect
-index is steady and which pulses — the firmware's enabled-animation list is not
+Workflow for a new board: run **`kbd-signal setup`**. It picks the device,
+confirms that the configured VIA v3 custom channel actually drives it, measures
+whether the firmware needs `reset_on_effect`, and asks you to look at the
+keyboard and say which effect index is steady and which pulses — the firmware's enabled-animation list is not
 readable over raw HID, so those two indices can only come from your eyes. It
 then writes the `device` block (keeping your previous `config.json` as
 `config.json.bak`). Finish with `kbd-signal test`.

@@ -161,6 +161,46 @@ class EchoPersistenceTests(unittest.TestCase):
             states._restore_locked(None, None)
         return states.load_state()
 
+    def test_a_restore_records_what_it_wrote_and_what_came_back(self):
+        """The load-bearing link: everything else here builds the pair by hand,
+        so making _brightness_echo return None left the whole fix inert with the
+        suite green."""
+        kb = mock.MagicMock()
+        kb.__enter__ = mock.Mock(return_value=kb)
+        kb.__exit__ = mock.Mock(return_value=False)
+        kb.apply_snapshot.return_value = True
+        kb.settle_brightness.return_value = True
+        kb.get_value.return_value = [119]
+        written = self._restore_with(mock.Mock(return_value=kb))
+        self.assertEqual(written.get("brightness_echo"),
+                         {"written": 119, "readback": 119,
+                          "device": states._device_identity()})
+
+    def test_the_pair_survives_a_full_restore_then_capture(self):
+        """End to end: restore writes the baseline, the next capture reads the
+        lossy value back and recovers the one that was written."""
+        kb = mock.MagicMock()
+        kb.__enter__ = mock.Mock(return_value=kb)
+        kb.__exit__ = mock.Mock(return_value=False)
+        kb.apply_snapshot.return_value = True
+        kb.settle_brightness.return_value = True
+        kb.apply.return_value = True
+        # The board answers 119 for the 120 restore wrote, and keeps answering
+        # 119 when the next cycle snapshots it.
+        kb.get_value.return_value = [119]
+        kb.snapshot.return_value = _snap(119)
+
+        state = {"active": "waiting", "generation": 4, "owners": [],
+                 "baseline": _snap(120), "last_baseline": _snap(120),
+                 "last_baseline_device": states._device_identity()}
+        states.save_state(state)
+        keyboard = mock.Mock(return_value=kb)
+        with mock.patch.object(states.via, "Keyboard", keyboard):
+            states._restore_locked(None, None)
+            states.set_state("done")
+        self.assertEqual(states.load_state()["baseline"]["brightness"], 120,
+                         "the capture should recover the value restore wrote")
+
     def test_an_absent_keyboard_keeps_the_pair(self):
         def missing():
             raise via.DeviceNotFound("no raw HID interface")

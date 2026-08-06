@@ -36,6 +36,7 @@ for doing it by hand.
 import json
 import os
 import shutil
+import sys
 
 from . import _platform
 
@@ -78,6 +79,35 @@ def device():
     return load()["device"]
 
 
+def _keep_previous(path):
+    """Copy the current config aside as .bak, atomically.
+
+    Copying straight onto .bak is not atomic: a failure partway (a full disk)
+    leaves it truncated, destroying the generation it was meant to preserve. So
+    the copy lands on .bak.tmp and is swapped in with os.replace.
+
+    Only "there is nothing to keep yet" is silent. Anything else -- a read-only
+    .bak, another process holding it open on Windows, a full disk -- is reported,
+    because `kbd-signal setup` promises "previous kept as .bak" at its prompt and
+    a promise that quietly does not hold is worse than a noisy one. The config
+    write itself carries on either way: losing the backup is not a reason to
+    refuse to save.
+    """
+    staging = path + ".bak.tmp"
+    try:
+        shutil.copyfile(path, staging)
+        os.replace(staging, path + ".bak")
+    except FileNotFoundError:
+        return  # first save on this machine; no previous generation exists
+    except OSError as e:
+        print(f"kbd-signal: could not keep a backup of {path} ({e})",
+              file=sys.stderr)
+        try:
+            os.remove(staging)
+        except OSError:
+            pass
+
+
 def save(cfg):
     """Write config.json atomically, keeping one .bak generation.
 
@@ -94,11 +124,16 @@ def save(cfg):
     """
     os.makedirs(STATE_DIR, exist_ok=True)
     tmp = CONFIG_FILE + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(cfg, f, indent=2)
-        f.write("\n")
     try:
-        shutil.copyfile(CONFIG_FILE, CONFIG_FILE + ".bak")
-    except OSError:
-        pass  # no previous config to keep
-    os.replace(tmp, CONFIG_FILE)
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, indent=2)
+            f.write("\n")
+        _keep_previous(CONFIG_FILE)
+        os.replace(tmp, CONFIG_FILE)
+    finally:
+        # A successful swap already moved it; this only bites on the paths that
+        # left it behind, where a stale .tmp would outlive the failure.
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass

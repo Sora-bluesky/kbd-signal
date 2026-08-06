@@ -5,6 +5,7 @@ what lands in config.json: the reset-quirk probe, the channel probe, the
 effect-index interview's bookkeeping, and the merge that must not lose keys.
 """
 
+import io
 import json
 import os
 import tempfile
@@ -294,6 +295,55 @@ class SaveTests(unittest.TestCase):
         config.save({"device": {}})
         self.assertFalse(os.path.exists(
             os.path.join(self.dir, "config.json.bak")))
+
+    def test_a_backup_that_fails_partway_does_not_destroy_the_old_one(self):
+        """Copying straight onto .bak is not atomic: a failure partway leaves it
+        truncated, destroying the generation it exists to preserve."""
+        config.save({"device": {"product_match": "first"}})
+        config.save({"device": {"product_match": "second"}})   # .bak = first
+
+        def truncating_copy(src, dst):
+            with open(dst, "w", encoding="utf-8") as f:
+                f.write('{"device"')
+            raise OSError("disk full")
+
+        with mock.patch("shutil.copyfile", side_effect=truncating_copy):
+            config.save({"device": {"product_match": "third"}})
+        self.assertEqual(self._read("config.json.bak")["device"]["product_match"],
+                         "first")
+
+    def test_a_failed_backup_is_reported_not_swallowed(self):
+        """setup's prompt promises "previous kept as .bak"; a promise that
+        quietly does not hold is worse than a noisy one."""
+        config.save({"device": {"product_match": "first"}})
+        with mock.patch("shutil.copyfile",
+                        side_effect=PermissionError("bak is locked")), \
+             mock.patch("sys.stderr", new_callable=io.StringIO) as err:
+            config.save({"device": {"product_match": "second"}})
+        self.assertIn("could not keep a backup", err.getvalue())
+        # The config write itself still goes through.
+        self.assertEqual(self._read()["device"]["product_match"], "second")
+
+    def test_a_first_save_reports_nothing(self):
+        """"nothing to keep yet" is the one silent case."""
+        with mock.patch("sys.stderr", new_callable=io.StringIO) as err:
+            config.save({"device": {"product_match": "first"}})
+        self.assertEqual(err.getvalue(), "")
+
+    def test_no_scratch_files_survive_a_failed_save(self):
+        config.save({"device": {"product_match": "first"}})
+        real_replace = os.replace
+
+        def fail_only_the_swap(src, dst):
+            if str(dst) == config.CONFIG_FILE:
+                raise OSError("swap failed")
+            return real_replace(src, dst)
+
+        with mock.patch("os.replace", side_effect=fail_only_the_swap):
+            with self.assertRaises(OSError):
+                config.save({"device": {"product_match": "second"}})
+        leftovers = [n for n in os.listdir(self.dir) if n.endswith(".tmp")]
+        self.assertEqual(leftovers, [])
 
     def test_null_product_match_is_written_not_omitted(self):
         """Omitting the key lets DEFAULT_DEVICE's "K8" merge back in and

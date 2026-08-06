@@ -201,6 +201,27 @@ class EchoPersistenceTests(unittest.TestCase):
         self.assertEqual(states.load_state()["baseline"]["brightness"], 120,
                          "the capture should recover the value restore wrote")
 
+    def test_an_unsettled_brightness_still_records_the_pair(self):
+        """Only the "off" path had a test for a brightness that would not
+        settle; the baseline path's branch was unreached, and it now also
+        decides whether the pair is recorded.
+
+        Recording it is right: the read happens after the write attempt, so the
+        pair describes what the device actually shows either way, and the value
+        it maps back to is the baseline we meant."""
+        kb = mock.MagicMock()
+        kb.__enter__ = mock.Mock(return_value=kb)
+        kb.__exit__ = mock.Mock(return_value=False)
+        kb.apply_snapshot.return_value = True
+        kb.settle_brightness.return_value = False      # the #34 revert
+        kb.get_value.return_value = [255]              # reverted to the signal
+        written = self._restore_with(mock.Mock(return_value=kb))
+        self.assertEqual(written.get("brightness_echo"),
+                         {"written": 119, "readback": 255,
+                          "device": states._device_identity()})
+        with open(states.LOG_FILE, encoding="utf-8") as f:
+            self.assertIn("brightness not confirmed", f.read())
+
     def test_an_absent_keyboard_keeps_the_pair(self):
         def missing():
             raise via.DeviceNotFound("no raw HID interface")

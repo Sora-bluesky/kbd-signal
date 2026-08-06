@@ -758,10 +758,16 @@ def _restore_locked(generation, session, owner_prefix=None, owner_aliases=(),
                 save_state(state)
                 log(f"restore: released owner, {len(remaining)} still pending")
                 return True
+    # Read once and reuse: restore's I/O runs for up to ~2 s between the checks
+    # below and the echo stamp at the end (set_color's settle plus
+    # settle_brightness's hold), and re-reading config across that window is how
+    # #44's split-read inconsistency would land here -- the pair could be
+    # stamped with a different identity than the baseline was validated against.
+    device_identity = _device_identity()
     baseline = state.get("baseline")
     if (baseline is not None
             and (not _valid_snapshot(baseline)
-                 or state.get("last_baseline_device") != _device_identity())):
+                 or state.get("last_baseline_device") != device_identity)):
         log("restore: baseline rejected (invalid or from another device)")
         baseline = None
     mode = load_config().get("restore", "baseline")
@@ -792,7 +798,7 @@ def _restore_locked(generation, session, owner_prefix=None, owner_aliases=(),
                 # reliably goes dark.
                 if not kb.settle_brightness(0):
                     log("restore: brightness 0 not confirmed after retries")
-                echo = _brightness_echo(kb, 0, _device_identity())
+                echo = _brightness_echo(kb, 0, device_identity)
             else:
                 if not kb.apply_snapshot(baseline):
                     # Color never settled: the LEDs were left dark, and
@@ -807,7 +813,7 @@ def _restore_locked(generation, session, owner_prefix=None, owner_aliases=(),
                     # for it, so the next baseline capture can tell "nobody
                     # touched it" from "the user turned it down" (#58).
                     echo = _brightness_echo(kb, baseline["brightness"],
-                                            _device_identity())
+                                            device_identity)
     except (via.DeviceNotFound, OSError) as e:
         # Keyboard gone: RAM-only changes vanish on power cycle anyway.
         log(f"restore: device unavailable ({e})")

@@ -59,7 +59,10 @@ def enumerate_raw_hid(vendor_id=None):
     ]
 
 
-def find_device_path(dev_cfg=None):
+def find_device(dev_cfg=None):
+    """The enumeration entry this config targets (VID, optional PID pin, then
+    product-string preference). `kbd-signal export` needs the whole entry, not
+    just the path, so the selection rule lives here and has one implementation."""
     dev_cfg = dev_cfg or config.device()
     candidates = enumerate_raw_hid(dev_cfg["vendor_id"])
     if dev_cfg.get("product_id") is not None:
@@ -74,8 +77,12 @@ def find_device_path(dev_cfg=None):
     if match:
         for d in candidates:
             if match in (d.get("product_string") or ""):
-                return d["path"]
-    return candidates[0]["path"]
+                return d
+    return candidates[0]
+
+
+def find_device_path(dev_cfg=None):
+    return find_device(dev_cfg)["path"]
 
 
 def verify_channel(kb):

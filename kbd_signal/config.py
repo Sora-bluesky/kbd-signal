@@ -82,12 +82,12 @@ def save(cfg):
     """Write config.json atomically, keeping one .bak generation.
 
     config.json is a hand-edited file, so `kbd-signal setup` never clobbers it
-    in place: the previous contents move to config.json.bak and the new file
-    lands via os.replace, same as states.save_state.
+    in place: the previous contents are copied to config.json.bak and the new
+    file lands via os.replace, same as states.save_state.
 
     config.json is never absent, even for an instant. The replacement is written
-    in full first, then the previous contents are *copied* to .bak, and only the
-    final os.replace swaps it in. Moving the old file aside instead would leave a
+    in full first, then the old contents are copied aside, and only the final
+    os.replace swaps it in. *Moving* the old file aside instead would leave a
     window with no config.json -- and load() answers a missing file with the
     K8 Pro defaults, silently, so a failure in that window would look like a
     working config for the wrong keyboard.

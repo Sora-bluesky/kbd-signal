@@ -20,7 +20,7 @@ Before signaling, the current lighting (effect / speed / brightness / color) is 
 
 - Windows or macOS, Python 3.11+ (`hidapi` is the only dependency; its macOS wheel is self-contained via IOKit, so no Homebrew `hidapi` is needed)
 - Keychron K8 Pro connected via **USB cable with the rear switch set to "Cable"**. Raw HID is not available over Bluetooth — measured: in BT mode with the cable attached, the USB HID collections enumerate but the `0xFF60` raw interface does not
-- When the keyboard is absent (BT mode, unplugged), the hook-facing commands (`hook`, `set`, `restore`) silently no-op with exit 0 — hooks are never blocked. Diagnostic commands (`setup`, `detect`, `test`, `raw-effect`) report the missing device and exit 1
+- When the keyboard is absent (BT mode, unplugged), the hook-facing commands (`hook`, `set`, `restore`) silently no-op with exit 0 — hooks are never blocked. Diagnostic commands (`setup`, `export`, `detect`, `test`, `raw-effect`) report the missing device and exit 1
 - Do not run the VIA app / Keychron Launcher at the same time (concurrent raw HID writes race)
 - Codex requires a version with lifecycle hooks; run `codex features list` and confirm that `hooks` is enabled
 - Concurrent Claude Code / Codex sessions and subagents are tracked independently; orange remains active while any approval is pending
@@ -60,6 +60,7 @@ Plain pip also works (`py -m pip install .`); in that case invoke the hooks with
 
 ```
 kbd-signal setup                 # interactive first-run config for a new keyboard
+kbd-signal export                # print a docs/devices + examples preset skeleton
 kbd-signal detect                # find the keyboard, show protocol & current lighting
 kbd-signal set <waiting|done|error>
 kbd-signal restore [--after N] [--gen G]
@@ -178,6 +179,13 @@ then writes the `device` block (keeping your previous `config.json` as
 
 `setup` refuses to run while a signal is showing, since it captures the current
 lighting to restore afterwards.
+
+Once your board works, **`kbd-signal export`** prints the two files a device page
+is made of — `examples/config.<board>.json` and a `docs/devices/<board>.md`
+skeleton — with the detected values filled in and every human-only field marked
+`TODO`. Fill those in and open a pull request so the next owner of your keyboard
+does not have to repeat the work. It only reads from the device, so unlike
+`setup` it is safe to run at any time.
 
 By hand instead:
 

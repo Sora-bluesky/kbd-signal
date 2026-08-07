@@ -373,22 +373,76 @@ def _cancel_wake(state):
     state.pop("wake_boot", None)
 
 
+def _valid_byte(value):
+    return (isinstance(value, int) and not isinstance(value, bool)
+            and 0 <= value < 256)
+
+
 def _valid_snapshot(snap):
     """True when snap has the complete byte-safe shape for restoration."""
     if not isinstance(snap, dict):
         return False
-    for field in ("effect", "speed", "brightness"):
-        value = snap.get(field)
-        if (not isinstance(value, int) or isinstance(value, bool)
-                or not 0 <= value < 256):
-            return False
+    if not all(_valid_byte(snap.get(field))
+               for field in ("effect", "speed", "brightness")):
+        return False
     color = snap.get("color")
     return (isinstance(color, (list, tuple))
             and len(color) == 2
-            and all(isinstance(value, int)
-                    and not isinstance(value, bool)
-                    and 0 <= value < 256
-                    for value in color))
+            and all(_valid_byte(value) for value in color))
+
+
+def _brightness_echo(kb, written, device_identity):
+    """What restore wrote, paired with what the firmware reads back for it.
+
+    Returns None when the read fails; the caller then simply forgets the pair
+    and the next baseline is taken as read, which is the pre-#58 behaviour.
+    """
+    try:
+        # tries=2, not get_value's default 6: this runs inside the state lock,
+        # and at 250 ms a try the default would add up to 1.5 s on a device that
+        # has stopped answering -- the same lock-held stall #57 removed. The
+        # pair is an optimisation; not getting it costs one cycle of drift.
+        readback = kb.get_value(via.VALUE_BRIGHTNESS, tries=2)[0]
+    except OSError:
+        return None
+    return {"written": written, "readback": readback,
+            "device": device_identity}
+
+
+def _undo_lossy_brightness(snap, state, device_identity):
+    """Put the brightness we wrote back into a snapshot that only reads it.
+
+    VIA scales brightness through the firmware's internal limit in both
+    directions, and on the rgb_matrix channel the two directions do not use the
+    same divisor (#56), so re-reading our own write returns a slightly lower
+    number. Storing that as the new baseline and writing it back walks the value
+    down a little every signal cycle.
+
+    Measured on a Q1 HE 8K over 60 cycles: 200 settles at 199 and 120 at 117 --
+    invisible -- but 10 walks 9, 7, 6, 5, 3, 2, 1, 0. The absolute loss is a
+    near-constant 0-2, so the *relative* loss explodes at the bottom and a dim
+    backlight goes fully dark -- eight cycles, which at the 107 restores a day
+    in the log this was found in is under two hours (#58).
+
+    The echo pair is what the last restore wrote and what the firmware reported
+    for it. A reading that still matches the echo means nobody has touched the
+    keyboard since, so the value we meant is the honest baseline. Anything else
+    is the user's own change and is taken as read.
+
+    Deliberately not gated on the protocol generation: where the round trip is
+    lossless -- VIA v2 at QMK's default RGBLIGHT_LIMIT_VAL, and any v3 value
+    that lands on a fixed point -- written equals readback and this is the
+    identity. A v2 board with a lowered limit is lossy and gets the correction,
+    which a `self._v3` test would have missed.
+    """
+    echo = state.get("brightness_echo")
+    if not isinstance(echo, dict) or echo.get("device") != device_identity:
+        return snap
+    if not (_valid_byte(echo.get("written")) and _valid_byte(echo.get("readback"))):
+        return snap
+    if snap.get("brightness") != echo["readback"]:
+        return snap  # the user moved it; that reading is the real baseline
+    return {**snap, "brightness": echo["written"]}
 
 
 def _looks_like_signal(snap):
@@ -568,6 +622,9 @@ def _apply_state(kb, state, name, session, pattern, device_identity,
                 log(f"set {name}: snapshot matches a signal pattern, "
                     f"baseline discarded")
         else:
+            # After the signal check, so the guard still sees what the device
+            # actually reports; only the value we keep is corrected.
+            snap = _undo_lossy_brightness(snap, state, device_identity)
             state["baseline"] = snap
             state["last_baseline"] = snap
             state["last_baseline_device"] = device_identity
@@ -701,15 +758,24 @@ def _restore_locked(generation, session, owner_prefix=None, owner_aliases=(),
                 save_state(state)
                 log(f"restore: released owner, {len(remaining)} still pending")
                 return True
+    # Read once and reuse: restore's I/O runs for up to ~2 s between the checks
+    # below and the echo stamp at the end (set_color's settle plus
+    # settle_brightness's hold), and re-reading config across that window is how
+    # #44's split-read inconsistency would land here -- the pair could be
+    # stamped with a different identity than the baseline was validated against.
+    device_identity = _device_identity()
     baseline = state.get("baseline")
     if (baseline is not None
             and (not _valid_snapshot(baseline)
-                 or state.get("last_baseline_device") != _device_identity())):
+                 or state.get("last_baseline_device") != device_identity)):
         log("restore: baseline rejected (invalid or from another device)")
         baseline = None
     mode = load_config().get("restore", "baseline")
+    echo = None
+    reached_device = False
     try:
         with via.Keyboard() as kb:
+            reached_device = True
             if mode == "off" or not baseline:
                 # Off mode always goes dark first (avoids a flash of the
                 # baseline effect), then puts the stored effect/color back so
@@ -732,20 +798,42 @@ def _restore_locked(generation, session, owner_prefix=None, owner_aliases=(),
                 # reliably goes dark.
                 if not kb.settle_brightness(0):
                     log("restore: brightness 0 not confirmed after retries")
+                # No pair here. The 0 is a forced blackout, not the user's
+                # setting, so recording it as the meaning of whatever the
+                # firmware reports back is a lie: if the write did not land the
+                # pair becomes {0, <the user's real brightness>}, and the next
+                # capture reads that brightness, calls it untouched, and stores
+                # 0 as the baseline -- in last_baseline too, so #45's fallback
+                # cannot undo it. The baseline path below records instead,
+                # where the written value really is the baseline.
             else:
                 if not kb.apply_snapshot(baseline):
                     # Color never settled: the LEDs were left dark, and
                     # raising brightness onto the wrong color would defeat
                     # that guard — no brightness settle either.
                     log("restore: color not confirmed after retries")
-                elif not kb.settle_brightness(baseline["brightness"]):
-                    # Same #34 revert can undo the baseline brightness.
-                    log("restore: brightness not confirmed after retries")
+                else:
+                    if not kb.settle_brightness(baseline["brightness"]):
+                        # Same #34 revert can undo the baseline brightness.
+                        log("restore: brightness not confirmed after retries")
+                    # Pair what we just wrote with what the firmware reports
+                    # for it, so the next baseline capture can tell "nobody
+                    # touched it" from "the user turned it down" (#58).
+                    echo = _brightness_echo(kb, baseline["brightness"],
+                                            device_identity)
     except (via.DeviceNotFound, OSError) as e:
         # Keyboard gone: RAM-only changes vanish on power cycle anyway.
         log(f"restore: device unavailable ({e})")
     cleared = {"active": None, "generation": state["generation"],
                "baseline": None}
+    if echo is not None:
+        cleared["brightness_echo"] = echo
+    elif not reached_device and "brightness_echo" in state:
+        # The keyboard was never opened, so nothing was written and the pair
+        # from the last restore still describes what is on it. Once writing has
+        # started the old pair is stale and is dropped instead: the next
+        # baseline is then taken as read, which is the pre-#58 behaviour.
+        cleared["brightness_echo"] = state["brightness_echo"]
     if "last_baseline" in state:
         cleared["last_baseline"] = state["last_baseline"]
         if "last_baseline_device" in state:

@@ -9,7 +9,7 @@ from contextlib import ExitStack
 from typing import ClassVar
 from unittest import mock
 
-from kbd_signal import states
+from kbd_signal import states, via
 
 
 class FakeKeyboard:
@@ -48,7 +48,17 @@ class FakeKeyboard:
 
     def settle_brightness(self, value):
         self.settled.append(value)
+        self.last_brightness = value
         return True
+
+    def get_value(self, value_id, length=1, tries=6):
+        # The real Keyboard has this, and restore reads brightness back to pair
+        # it with what it wrote (#58). Lossless here: these tests are about the
+        # state machine, and a board whose round trip is exact makes the
+        # correction the identity.
+        if value_id == via.VALUE_BRIGHTNESS:
+            return [getattr(self, "last_brightness", 120)]
+        return [0] * length
 
 
 class StateFileTestCase(unittest.TestCase):

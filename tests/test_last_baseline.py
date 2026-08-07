@@ -359,7 +359,8 @@ class LastBaselineTests(StateFileTestCase):
         states.save_state(active)
 
         with mock.patch.object(
-            states, "load_config", return_value={"restore": "off"}
+            states, "load_config",
+            return_value={"restore": "off", "device": self.DEVICE}
         ):
             states.restore(session=self.OWNER)
 

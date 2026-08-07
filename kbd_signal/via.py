@@ -63,7 +63,10 @@ def find_device(dev_cfg=None):
     """The enumeration entry this config targets (VID, optional PID pin, then
     product-string preference). `kbd-signal export` needs the whole entry, not
     just the path, so the selection rule lives here and has one implementation."""
-    dev_cfg = dev_cfg or config.device()
+    # `is None`, not `or`: an empty mapping is falsy, and falling back on it
+    # would read the config a second time behind a caller that passed its own
+    # snapshot precisely to avoid that (#44).
+    dev_cfg = config.device() if dev_cfg is None else dev_cfg
     candidates = enumerate_raw_hid(dev_cfg["vendor_id"])
     if dev_cfg.get("product_id") is not None:
         candidates = [d for d in candidates
@@ -168,7 +171,7 @@ def probe_reset_on_effect(kb, effect, window=0.3, settle=0.02):
 class Keyboard:
     def __init__(self, dev_cfg=None):
         import hid
-        self._cfg = dev_cfg or config.device()
+        self._cfg = config.device() if dev_cfg is None else dev_cfg
         self._channel = self._cfg["v3_channel"]
         self._dev = hid.device()
         self._dev.open_path(find_device_path(self._cfg))

@@ -6,12 +6,13 @@ the next baseline and writing it back compounds: measured on a Q1 HE 8K, 120
 settles at 117 but 10 walks to 0 -- a dim backlight goes dark.
 """
 
+import json
 import os
 import tempfile
 import unittest
 from unittest import mock
 
-from kbd_signal import states, via
+from kbd_signal import config, states, via
 
 DEVICE = {"vendor_id": 0x3434, "product_id": 0x1012}
 OTHER_DEVICE = {"vendor_id": 0x3434, "product_id": 0x0192}
@@ -22,6 +23,43 @@ def _snap(brightness, **over):
             "color": [0, 255]}
     snap.update(over)
     return snap
+
+
+class _IsolatedState(unittest.TestCase):
+    """State dir, config and the detached restore all pointed away from the
+    machine running the tests.
+
+    config.CONFIG_FILE matters: _restore_locked reads `restore` from it, so
+    without this the suite takes the dark path on any developer running
+    `{"restore": "off"}` -- a documented setting -- and three tests here fail.
+    CI passes only because its runners have no config.json at all.
+
+    _spawn_delayed_restore matters more: set_state("done") launches
+    `python -m kbd_signal restore --after 5 --gen N` detached, and that child is
+    a fresh interpreter, so no patch here reaches it. It reads the real state
+    dir and the real config and writes to a real keyboard five seconds later.
+    """
+
+    def setUp(self):
+        directory = tempfile.mkdtemp()
+        config_path = os.path.join(directory, "config.json")
+        with open(config_path, "w", encoding="utf-8") as f:
+            json.dump({"restore": "baseline"}, f)
+        patches = [
+            mock.patch.object(states, "STATE_DIR", directory),
+            mock.patch.object(states, "STATE_FILE",
+                              os.path.join(directory, "state.json")),
+            mock.patch.object(states, "ACTIVE_FLAG",
+                              os.path.join(directory, "active.flag")),
+            mock.patch.object(states, "LOG_FILE",
+                              os.path.join(directory, "log")),
+            mock.patch.object(config, "CONFIG_FILE", config_path),
+            mock.patch.object(states, "_spawn_delayed_restore",
+                              return_value=True),
+        ]
+        for patch in patches:
+            patch.start()
+            self.addCleanup(patch.stop)
 
 
 class UndoLossyBrightnessTests(unittest.TestCase):
@@ -114,8 +152,6 @@ class DecayTests(unittest.TestCase):
         self.assertEqual(self._cycles(120, 9, correcting=False)[-1], 117)
 
 
-if __name__ == "__main__":
-    unittest.main()
 
 
 class EchoCaptureTests(unittest.TestCase):
@@ -135,19 +171,10 @@ class EchoCaptureTests(unittest.TestCase):
         self.assertIsNone(states._brightness_echo(kb, 120, {"vendor_id": 1}))
 
 
-class EchoPersistenceTests(unittest.TestCase):
+class EchoPersistenceTests(_IsolatedState):
     """A pair describes the last thing written to the keyboard, so it survives
     exactly the case where nothing was written."""
 
-    def setUp(self):
-        directory = tempfile.mkdtemp()
-        for name, value in (("STATE_DIR", directory),
-                            ("STATE_FILE", os.path.join(directory, "state.json")),
-                            ("ACTIVE_FLAG", os.path.join(directory, "active.flag")),
-                            ("LOG_FILE", os.path.join(directory, "log"))):
-            patch = mock.patch.object(states, name, value)
-            patch.start()
-            self.addCleanup(patch.stop)
 
     ECHO = {"written": 120, "readback": 119, "device": DEVICE}
 
@@ -222,6 +249,45 @@ class EchoPersistenceTests(unittest.TestCase):
         with open(states.LOG_FILE, encoding="utf-8") as f:
             self.assertIn("brightness not confirmed", f.read())
 
+    def test_the_dark_path_records_no_pair(self):
+        """The 0 written there is a forced blackout, not the user's setting.
+
+        Recording it would mean the pair says "whatever the firmware reports
+        back means 0", and if the write did not land that reading is the user's
+        real brightness -- which the next capture then stores as 0, in
+        last_baseline too, so #45's fallback cannot recover it.
+        """
+        kb = mock.MagicMock()
+        kb.__enter__ = mock.Mock(return_value=kb)
+        kb.__exit__ = mock.Mock(return_value=False)
+        kb.settle_brightness.return_value = False   # the 0 never landed
+        kb.get_value.return_value = [119]           # the board is still at 119
+        with mock.patch.object(states, "load_config",
+                               return_value={"restore": "off"}):
+            written = self._restore_with(mock.Mock(return_value=kb))
+        self.assertIsNone(written.get("brightness_echo"))
+
+    def test_a_dark_restore_cannot_turn_the_baseline_off(self):
+        """End to end for the same hazard, through the default mode: with no
+        baseline to repaint from, restore takes the dark path too (#35)."""
+        kb = mock.MagicMock()
+        kb.__enter__ = mock.Mock(return_value=kb)
+        kb.__exit__ = mock.Mock(return_value=False)
+        kb.settle_brightness.return_value = False
+        kb.get_value.return_value = [119]
+        kb.apply.return_value = True
+        kb.snapshot.return_value = _snap(119)
+        states.save_state({"active": "waiting", "generation": 3, "owners": [],
+                           "baseline": None,
+                           "last_baseline_device": states._device_identity()})
+        with mock.patch.object(states.via, "Keyboard",
+                               mock.Mock(return_value=kb)):
+            states._restore_locked(None, None)
+            states.set_state("done")
+        stored = states.load_state()
+        self.assertEqual(stored["baseline"]["brightness"], 119)
+        self.assertEqual(stored["last_baseline"]["brightness"], 119)
+
     def test_an_absent_keyboard_keeps_the_pair(self):
         def missing():
             raise via.DeviceNotFound("no raw HID interface")
@@ -240,7 +306,7 @@ class EchoPersistenceTests(unittest.TestCase):
             self._restore_with(mock.Mock(return_value=kb)).get("brightness_echo"))
 
 
-class SignalGuardOrderingTests(unittest.TestCase):
+class SignalGuardOrderingTests(_IsolatedState):
     """The correction runs *after* the leftover-signal guard, and that ordering
     is load-bearing.
 
@@ -253,15 +319,6 @@ class SignalGuardOrderingTests(unittest.TestCase):
     induced by the fix for #58.
     """
 
-    def setUp(self):
-        directory = tempfile.mkdtemp()
-        for name, value in (("STATE_DIR", directory),
-                            ("STATE_FILE", os.path.join(directory, "state.json")),
-                            ("ACTIVE_FLAG", os.path.join(directory, "active.flag")),
-                            ("LOG_FILE", os.path.join(directory, "log"))):
-            patch = mock.patch.object(states, name, value)
-            patch.start()
-            self.addCleanup(patch.stop)
 
     def test_a_reading_the_correction_would_turn_into_a_signal_is_still_kept(self):
         done = states.patterns()["done"]
@@ -290,3 +347,6 @@ class SignalGuardOrderingTests(unittest.TestCase):
         baseline = states.load_state()["baseline"]
         self.assertIsNotNone(baseline, "the guard saw the corrected value")
         self.assertEqual(baseline["brightness"], done["brightness"])
+
+if __name__ == "__main__":
+    unittest.main()

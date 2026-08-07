@@ -421,8 +421,8 @@ def _undo_lossy_brightness(snap, state, device_identity):
     Measured on a Q1 HE 8K over 60 cycles: 200 settles at 199 and 120 at 117 --
     invisible -- but 10 walks 9, 7, 6, 5, 3, 2, 1, 0. The absolute loss is a
     near-constant 0-2, so the *relative* loss explodes at the bottom and a dim
-    backlight goes fully dark, at this log's 107 restores a day, within the
-    hour (#58).
+    backlight goes fully dark -- eight cycles, which at the 107 restores a day
+    in the log this was found in is under two hours (#58).
 
     The echo pair is what the last restore wrote and what the firmware reported
     for it. A reading that still matches the echo means nobody has touched the
@@ -798,7 +798,14 @@ def _restore_locked(generation, session, owner_prefix=None, owner_aliases=(),
                 # reliably goes dark.
                 if not kb.settle_brightness(0):
                     log("restore: brightness 0 not confirmed after retries")
-                echo = _brightness_echo(kb, 0, device_identity)
+                # No pair here. The 0 is a forced blackout, not the user's
+                # setting, so recording it as the meaning of whatever the
+                # firmware reports back is a lie: if the write did not land the
+                # pair becomes {0, <the user's real brightness>}, and the next
+                # capture reads that brightness, calls it untouched, and stores
+                # 0 as the baseline -- in last_baseline too, so #45's fallback
+                # cannot undo it. The baseline path below records instead,
+                # where the written value really is the baseline.
             else:
                 if not kb.apply_snapshot(baseline):
                     # Color never settled: the LEDs were left dark, and

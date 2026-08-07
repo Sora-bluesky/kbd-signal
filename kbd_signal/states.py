@@ -429,15 +429,19 @@ def _undo_lossy_brightness(snap, state, device_identity):
     keyboard since, so the value we meant is the honest baseline. Anything else
     is the user's own change and is taken as read.
 
-    "Nobody touched it" is an equality test, so a user who lands on the recorded
-    readback by hand is indistinguishable from an untouched board and gets the
-    written value instead. That matters most at 255, both because it is a value
-    people pick deliberately and because a firmware revert (#34) parks the board
-    there. Mostly harmless in practice: 255 is also what patterns() writes, so a
-    snapshot showing it is usually signal-shaped and _looks_like_signal discards
-    it before this runs. Not always, though -- the guard needs the effect and
-    color to match too, so a user sitting at 255 on their own effect still trades
-    it for the echo's written value.
+    "Nobody touched it" is an equality test, so it cannot separate an untouched
+    board from a user who happened to land on the recorded readback. 255 is
+    where that bites: people pick it deliberately, and a firmware revert (#34)
+    parks a board there. The two cases need keeping apart. A board parked at 255
+    by the revert and left alone is what the pair is for -- putting the written
+    value back is the repair, not a mistake. Only a user who set 255 themselves
+    loses their choice to it.
+
+    _looks_like_signal does not narrow that down much, because it only intercepts
+    a reading that still matches a pattern on every field. That holds for a
+    leftover signal nothing has repainted; it does not once a restore has put
+    the user's own effect and color back, and the brightness alone reverted. So
+    255 sitting on the user's effect reaches this code and is traded away.
 
     Deliberately not gated on the protocol generation: where the round trip is
     lossless -- VIA v2 at QMK's default RGBLIGHT_LIMIT_VAL, and any v3 value

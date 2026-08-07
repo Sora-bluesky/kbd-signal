@@ -62,6 +62,34 @@ class _IsolatedState(unittest.TestCase):
             self.addCleanup(patch.stop)
 
 
+class SignalGuardReachTests(unittest.TestCase):
+    """How far _looks_like_signal narrows the equality test's blind spot.
+
+    The docstring on _undo_lossy_brightness used to claim a reading of 255 is
+    "usually signal-shaped" and so mostly discarded before the correction runs.
+    It is not: the guard compares every field, and a restore repaints the user's
+    effect and color before the brightness write that #34 can revert. These pin
+    both sides so the claim stops being prose.
+    """
+
+    def test_a_leftover_signal_is_still_intercepted(self):
+        pattern = states.patterns()["waiting"]
+        leftover = _snap(pattern["brightness"], effect=pattern["effect"],
+                         color=[pattern["hue"], pattern["sat"]],
+                         speed=pattern["speed"])
+        self.assertTrue(states._looks_like_signal(leftover))
+
+    def test_255_on_the_users_own_effect_reaches_the_correction(self):
+        """Brightness alone reverted to 255 after apply_snapshot restored the
+        user's effect and color: nothing about it looks like a signal."""
+        reverted = _snap(255)
+        self.assertFalse(states._looks_like_signal(reverted))
+        state = {"brightness_echo": {"written": 40, "readback": 255,
+                                     "device": DEVICE}}
+        out = states._undo_lossy_brightness(reverted, state, DEVICE)
+        self.assertEqual(out["brightness"], 40)
+
+
 class UndoLossyBrightnessTests(unittest.TestCase):
     def test_a_reading_that_matches_our_echo_is_our_own_write(self):
         state = {"brightness_echo": {"written": 120, "readback": 119,

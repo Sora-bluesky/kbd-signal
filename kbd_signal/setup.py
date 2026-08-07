@@ -168,11 +168,15 @@ def run():
             "(previous kept as .bak) [y/N]: ", ("y", "n", "")) != "y":
         print("not written; lighting restored.", file=sys.stderr)
         return 1
-    # A second read, minutes after the one at the top: it picks up edits made
-    # during the interview, but v3_channel above came from the earlier
-    # generation, and this is a read-modify-write so a concurrent edit is lost
-    # rather than merged. Which generation should win is a decision this
-    # command has not made -- see #44's follow-up.
+    # A second read, minutes after the one at the top, so edits to keys outside
+    # "device" survive the interview. The device block itself is replaced
+    # wholesale on the next line -- that is what this command is for -- so an
+    # edit to any of its fields is discarded, v3_channel included: the block
+    # writes the channel verify_channel actually confirmed, not whatever the
+    # file says now. What remains is the ordinary read-modify-write gap between
+    # this line and the save -- an edit landing inside it is overwritten rather
+    # than merged. #44 closed the split reads within one operation; this gap is
+    # milliseconds and nobody has hit it.
     cfg = config.load()  # keeps "restore" and any other keys
     cfg["device"] = device
     config.save(cfg)

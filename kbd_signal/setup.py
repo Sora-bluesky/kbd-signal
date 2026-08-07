@@ -168,8 +168,10 @@ def run():
             "(previous kept as .bak) [y/N]: ", ("y", "n", "")) != "y":
         print("not written; lighting restored.", file=sys.stderr)
         return 1
-    # A second read, minutes after the one at the top, so edits made during the
-    # interview survive. v3_channel is deliberately not re-read: the block below
+    # A second read, minutes after the one at the top, so edits to keys outside
+    # "device" survive the interview. The device block itself is replaced
+    # wholesale on the next line -- that is what this command is for -- so an
+    # edit to any of its fields is discarded, v3_channel included: the block
     # writes the channel verify_channel actually confirmed, not whatever the
     # file says now. What remains is the ordinary read-modify-write gap between
     # this line and the save -- an edit landing inside it is overwritten rather

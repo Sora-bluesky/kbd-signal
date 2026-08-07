@@ -291,7 +291,8 @@ class EchoPersistenceTests(_IsolatedState):
         kb.settle_brightness.return_value = False   # the 0 never landed
         kb.get_value.return_value = [119]           # the board is still at 119
         with mock.patch.object(states, "load_config",
-                               return_value={"restore": "off"}):
+                               return_value={"restore": "off",
+                                             "device": config.DEFAULT_DEVICE}):
             written = self._restore_with(mock.Mock(return_value=kb))
         self.assertIsNone(written.get("brightness_echo"))
 
@@ -317,7 +318,7 @@ class EchoPersistenceTests(_IsolatedState):
         self.assertEqual(stored["last_baseline"]["brightness"], 119)
 
     def test_an_absent_keyboard_keeps_the_pair(self):
-        def missing():
+        def missing(dev_cfg=None):
             raise via.DeviceNotFound("no raw HID interface")
         self.assertEqual(self._restore_with(missing).get("brightness_echo"),
                          self.ECHO)

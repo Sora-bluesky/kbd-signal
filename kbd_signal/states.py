@@ -62,11 +62,14 @@ LOG_MAX_BYTES = 1024 * 1024  # 1 MB
 STATE_NAMES = ("waiting", "done", "error")
 
 
-def patterns():
+def patterns(dev_cfg=None):
     """State -> lighting pattern, with effect indices from config so other
     VIA keyboards (different enabled-animation lists) can remap them.
-    QMK hue wheel: red=0, orange=21, green=85."""
-    fx = config.device()["effects"]
+    QMK hue wheel: red=0, orange=21, green=85.
+
+    Pass the caller's config snapshot to keep the indices from the same read
+    as the board being opened (#44); omit it and the live config is read."""
+    fx = (config.device() if dev_cfg is None else dev_cfg)["effects"]
     return {
         "waiting": dict(effect=fx["breathing"], hue=21, sat=255,
                         speed=170, brightness=255),
@@ -77,8 +80,12 @@ def patterns():
     }
 
 
-def _device_identity():
+def _device_identity(dev_cfg=None):
     """Configuration fields selecting and interpreting the VIA device.
+
+    Takes the caller's config snapshot so the fingerprint stored with a
+    baseline describes the same read as the board it was captured from (#44);
+    omit it and the live config is read.
 
     ``reset_on_effect`` is intentionally excluded: it changes write timing,
     not what stored effect, speed, or color values mean.
@@ -89,7 +96,7 @@ def _device_identity():
     ambiguity applies to baseline capture versus restore within one signal
     and is outside this guard's scope.
     """
-    device = config.device()
+    device = config.device() if dev_cfg is None else dev_cfg
     return {
         field: device.get(field)
         for field in (
@@ -459,7 +466,7 @@ def _undo_lossy_brightness(snap, state, device_identity):
     return {**snap, "brightness": echo["written"]}
 
 
-def _looks_like_signal(snap):
+def _looks_like_signal(snap, dev_cfg=None):
     """True when the snapshot matches a known signal pattern on every field.
 
     A baseline captured while the keyboard still shows an earlier signal (a
@@ -468,8 +475,9 @@ def _looks_like_signal(snap):
     self-perpetuating pollution (#32, measured 2026-07-26: the baseline
     became the waiting pattern, so every Fn wake-up showed orange
     breathing). Speed is compared only when the pattern specifies it (done
-    has none). patterns() derives from the live config, so boards with
-    remapped effect indices are covered automatically.
+    has none). The patterns derive from config, so boards with remapped
+    effect indices are covered automatically; pass the caller's snapshot to
+    compare against the same read the board was opened from (#44).
 
     Brightness 0 counts as a match too: an "off"-mode restore with no
     baseline can only dim the leftover signal (there is nothing to repaint
@@ -482,7 +490,7 @@ def _looks_like_signal(snap):
     variant) falls back to the last non-signal capture; with none stored
     yet, restore can only go dark. That cosmetic cost is strictly better
     than restoring the signal forever."""
-    for pattern in patterns().values():
+    for pattern in patterns(dev_cfg).values():
         if snap["effect"] != pattern["effect"]:
             continue
         if snap["brightness"] not in (pattern["brightness"], 0):
@@ -557,19 +565,25 @@ def set_state(name, session=None, owner_prefix=None, owner_aliases=()):
                 save_state(state)
     except LockTimeout as e:
         log(f"set {name}: {e} (expiry sweep), continuing")
-    pattern = patterns()[name]
-    device_identity = _device_identity()
+    # One read for the whole transition (#44). The pattern's effect indices,
+    # the fingerprint stored with the baseline, and the device actually opened
+    # all have to describe the same keyboard; reading the config separately for
+    # each let an edit land between them and mix two generations. Deliberately
+    # below the sweep: this is the first thing here that can raise, and #31
+    # requires the sweep to have run before anything that can.
+    dev_cfg = load_config()["device"]
+    pattern = patterns(dev_cfg)[name]
     # Open the device OUTSIDE the lock: enumerate/open/probe have no time
     # bound, and holding the 3s lock across them would make every
     # concurrent hook time out and drop its signal on a slow device.
     try:
-        kb = via.Keyboard()
+        kb = via.Keyboard(dev_cfg)
     except (via.DeviceNotFound, OSError) as e:
         log(f"set {name}: device unavailable ({e})")
         return False
     try:
         return _set_state_locked(
-            kb, name, session, pattern, device_identity,
+            kb, name, session, pattern, dev_cfg,
             owner_prefix, owner_aliases
         )
     except LockTimeout as e:
@@ -577,7 +591,7 @@ def set_state(name, session=None, owner_prefix=None, owner_aliases=()):
         return False
 
 
-def _set_state_locked(kb, name, session, pattern, device_identity,
+def _set_state_locked(kb, name, session, pattern, dev_cfg,
                       owner_prefix=None, owner_aliases=()):
     with kb, _state_lock():
         # Re-read and re-sweep under the transition lock: the state may
@@ -589,15 +603,21 @@ def _set_state_locked(kb, name, session, pattern, device_identity,
             # when a branch below returns early (blocked / sticky error).
             save_state(state)
         return _apply_state(
-            kb, state, name, session, pattern, device_identity,
+            kb, state, name, session, pattern, dev_cfg,
             owner_prefix, owner_aliases
         )
 
 
-def _apply_state(kb, state, name, session, pattern, device_identity,
+def _apply_state(kb, state, name, session, pattern, dev_cfg,
                  owner_prefix, owner_aliases):
     """Run the guarded transition. Caller holds the state lock and the
-    open keyboard, and has already swept (and persisted) expired owners."""
+    open keyboard, and has already swept (and persisted) expired owners.
+
+    Takes the config snapshot rather than a ready-made fingerprint so that
+    everything derived here — the fingerprint and the signal-shape guard's
+    patterns — comes from the same read as the board that is already open
+    (#44)."""
+    device_identity = _device_identity(dev_cfg)
     if state["active"] == "error" and name != "error":
         log(f"set {name}: blocked by sticky error")
         return True  # error is manual and sticky until restore
@@ -619,7 +639,7 @@ def _apply_state(kb, state, name, session, pattern, device_identity,
         except OSError as e:
             log(f"set {name}: snapshot failed ({e})")
             return False
-        if _looks_like_signal(snap):
+        if _looks_like_signal(snap, dev_cfg):
             # A leftover signal must not become the user's setting. Reuse
             # requires byte-range safety through _valid_snapshot and an
             # exact current-device identity match; otherwise baseline stays
@@ -628,7 +648,7 @@ def _apply_state(kb, state, name, session, pattern, device_identity,
             last = state.get("last_baseline")
             if (_valid_snapshot(last)
                     and state.get("last_baseline_device") == device_identity
-                    and not _looks_like_signal(last)):
+                    and not _looks_like_signal(last, dev_cfg)):
                 state["baseline"] = last
                 log(f"set {name}: snapshot matches a signal pattern, "
                     f"using last known baseline")
@@ -777,18 +797,24 @@ def _restore_locked(generation, session, owner_prefix=None, owner_aliases=(),
     # settle_brightness's hold), and re-reading config across that window is how
     # #44's split-read inconsistency would land here -- the pair could be
     # stamped with a different identity than the baseline was validated against.
-    device_identity = _device_identity()
+    # All three consumers come from this one read: the fingerprint the baseline
+    # is checked against, the restore mode, and the board that gets opened.
+    # Kept here rather than at the top of the function so the owner-guard early
+    # returns above, which need no config, gain no new way to fail.
+    cfg = load_config()
+    dev_cfg = cfg["device"]
+    device_identity = _device_identity(dev_cfg)
     baseline = state.get("baseline")
     if (baseline is not None
             and (not _valid_snapshot(baseline)
                  or state.get("last_baseline_device") != device_identity)):
         log("restore: baseline rejected (invalid or from another device)")
         baseline = None
-    mode = load_config().get("restore", "baseline")
+    mode = cfg.get("restore", "baseline")
     echo = None
     reached_device = False
     try:
-        with via.Keyboard() as kb:
+        with via.Keyboard(dev_cfg) as kb:
             reached_device = True
             if mode == "off" or not baseline:
                 # Off mode always goes dark first (avoids a flash of the

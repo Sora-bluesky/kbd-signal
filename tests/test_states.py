@@ -9,7 +9,7 @@ from contextlib import ExitStack
 from typing import ClassVar
 from unittest import mock
 
-from kbd_signal import states, via
+from kbd_signal import config, states, via
 
 
 class FakeKeyboard:
@@ -17,6 +17,11 @@ class FakeKeyboard:
     restored = []
     values = []
     settled: ClassVar[list] = []
+
+    def __init__(self, dev_cfg=None):
+        # states now opens the board with the snapshot it read once (#44), so
+        # the fake has to accept what via.Keyboard accepts.
+        self.dev_cfg = dev_cfg
 
     def __enter__(self):
         return self
@@ -86,7 +91,9 @@ class StateFileTestCase(unittest.TestCase):
             states, "_spawn_delayed_restore"
         ))
         self.stack.enter_context(mock.patch.object(
-            states, "load_config", return_value={"restore": "baseline"}
+            states, "load_config",
+            return_value={"restore": "baseline",
+                          "device": config.DEFAULT_DEVICE}
         ))
         self.stack.enter_context(mock.patch.object(
             states,
@@ -464,9 +471,9 @@ class WaitingTTLTests(StateFileTestCase):
         states.set_state("waiting", session=stale)
         self._age_owner(stale)
 
-        # patterns() reads the config and can raise on a corrupt file. The
-        # sweep runs before it under its own short lock, so even then a
-        # stale owner cannot survive the event.
+        # Building the pattern can raise on a corrupt file. The sweep runs
+        # before it under its own short lock, so even then a stale owner
+        # cannot survive the event.
         with mock.patch.object(
             states, "patterns", side_effect=KeyError("effects"),
         ), self.assertRaises(KeyError):
@@ -479,6 +486,32 @@ class WaitingTTLTests(StateFileTestCase):
         state = states.load_state()
         self.assertEqual(state["owners"], [])
         self.assertEqual(state["active"], "waiting")  # cleared on next event
+
+    def test_a_config_that_cannot_be_read_still_sweeps_a_stale_owner(self):
+        """Pins where the one config read sits (#44), not just that it exists.
+
+        The transition reads the config once now, and that read is the first
+        thing in set_state that can raise. Moving it above the expiry sweep
+        would read no differently and break no other test, but a corrupt
+        config would then strand the orange signal — the exact failure #31
+        put the sweep first to prevent.
+        """
+        stale = "claude:session-a:main"
+        states.set_state("waiting", session=stale)
+        self._age_owner(stale)
+
+        with mock.patch.object(
+            states, "load_config", side_effect=ValueError("bad vendor_id"),
+        ), self.assertRaises(ValueError):
+            states.set_state(
+                "done",
+                session="codex:session-b:main",
+                owner_prefix="codex:session-b:",
+            )
+
+        state = states.load_state()
+        self.assertEqual(state["owners"], [])
+        self.assertEqual(state["active"], "waiting")
 
     def test_orphaned_by_failed_event_recovers_via_stale_restore(self):
         # The sweep drops the last owner, then the same event dies before
@@ -801,7 +834,8 @@ class SignalBaselineGuardTests(StateFileTestCase):
             "effect": 2, "speed": 170, "brightness": 255, "color": [21, 255],
         })
         with mock.patch.object(
-            states, "load_config", return_value={"restore": "off"}
+            states, "load_config",
+            return_value={"restore": "off", "device": config.DEFAULT_DEVICE}
         ):
             states.restore(session="claude:session-a:main")
         self.assertEqual(FakeKeyboard.values,
@@ -829,7 +863,8 @@ class SignalBaselineGuardTests(StateFileTestCase):
         })
 
         with mock.patch.object(
-            states, "load_config", return_value={"restore": "off"}
+            states, "load_config",
+            return_value={"restore": "off", "device": config.DEFAULT_DEVICE}
         ):
             states.restore(session="claude:session-a:main")
 
@@ -856,7 +891,8 @@ class RestoreBrightnessSettleTests(StateFileTestCase):
         self._enter_waiting()
 
         with mock.patch.object(
-            states, "load_config", return_value={"restore": "off"}
+            states, "load_config",
+            return_value={"restore": "off", "device": config.DEFAULT_DEVICE}
         ):
             states.restore(session="claude:session-a:main")
 
@@ -876,7 +912,8 @@ class RestoreBrightnessSettleTests(StateFileTestCase):
         with mock.patch.object(
             FakeKeyboard, "settle_brightness", return_value=False,
         ), mock.patch.object(
-            states, "load_config", return_value={"restore": "off"}
+            states, "load_config",
+            return_value={"restore": "off", "device": config.DEFAULT_DEVICE}
         ):
             states.restore(session="claude:session-a:main")  # must not raise
 

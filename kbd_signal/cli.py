@@ -20,7 +20,10 @@ def cmd_detect(args):
         print('\nPut vendor_id/product_id into config.json under "device" '
               "to target one of these.")
         return 0
-    found = via.enumerate_raw_hid(config.device()["vendor_id"])
+    # One read for both the search and the open, so `detect` cannot report a
+    # board it found under one config and then describe another (#44).
+    dev_cfg = config.device()
+    found = via.enumerate_raw_hid(dev_cfg["vendor_id"])
     if not found:
         print("Configured keyboard's raw HID interface not found. "
               "Connect via USB cable (rear switch on Cable). "
@@ -29,7 +32,7 @@ def cmd_detect(args):
     for d in found:
         print(f"found: {d.get('product_string')} "
               f"(VID={d['vendor_id']:#06x} PID={d['product_id']:#06x})")
-    with via.Keyboard() as kb:
+    with via.Keyboard(dev_cfg) as kb:
         proto = kb.protocol
         snap = kb.snapshot()
     print(f"VIA protocol: {proto} ({'v3 custom channel' if proto >= 11 else 'v2 lighting'})")

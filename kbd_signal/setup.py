@@ -168,6 +168,11 @@ def run():
             "(previous kept as .bak) [y/N]: ", ("y", "n", "")) != "y":
         print("not written; lighting restored.", file=sys.stderr)
         return 1
+    # A second read, minutes after the one at the top: it picks up edits made
+    # during the interview, but v3_channel above came from the earlier
+    # generation, and this is a read-modify-write so a concurrent edit is lost
+    # rather than merged. Which generation should win is a decision this
+    # command has not made -- see #44's follow-up.
     cfg = config.load()  # keeps "restore" and any other keys
     cfg["device"] = device
     config.save(cfg)

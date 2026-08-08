@@ -145,6 +145,55 @@ class UndoLossyBrightnessTests(unittest.TestCase):
         self.assertEqual(out["brightness"], 120)
 
 
+class DriftLogTests(unittest.TestCase):
+    """The log line exists to make #58 visible, so silence is the feature.
+
+    Logging when the correction fires would print on every cycle -- the
+    correction runs on every capture by design. Logging when the stored value
+    moves prints nothing while things work and one line when they do not.
+    """
+
+    def _lines(self, previous, current):
+        written = []
+        with mock.patch.object(states, "log", side_effect=written.append):
+            states._log_brightness_drift("done", previous, current)
+        return written
+
+    def test_a_steady_baseline_says_nothing(self):
+        self.assertEqual(self._lines(_snap(120), _snap(120)), [])
+
+    def test_the_first_capture_says_nothing(self):
+        """No previous baseline is a starting point, not movement."""
+        self.assertEqual(self._lines(None, _snap(120)), [])
+
+    def test_a_value_that_moved_is_reported_with_both_ends(self):
+        line, = self._lines(_snap(120), _snap(117))
+        self.assertIn("120", line)
+        self.assertIn("117", line)
+
+    def test_only_brightness_counts(self):
+        """Effect and color change for reasons that are not this bug."""
+        self.assertEqual(
+            self._lines(_snap(120), _snap(120, effect=3, color=[85, 255])), [])
+
+    def test_a_full_steady_run_stays_silent_end_to_end(self):
+        """The claim that matters: with the correction working, a run of
+        cycles produces no lines at all."""
+        written = []
+        state, device = {}, 120
+        with mock.patch.object(states, "log", side_effect=written.append):
+            for _ in range(10):
+                snap = states._undo_lossy_brightness(_snap(device), state,
+                                                     DEVICE)
+                states._log_brightness_drift("done", state.get("last"), snap)
+                state["last"] = snap
+                device = DecayTests.MEASURED[snap["brightness"]]
+                state["brightness_echo"] = {"written": snap["brightness"],
+                                            "readback": device,
+                                            "device": DEVICE}
+        self.assertEqual(written, [])
+
+
 class DecayTests(unittest.TestCase):
     """The cycle itself: capture a baseline, write it back, capture again."""
 
@@ -333,6 +382,54 @@ class EchoPersistenceTests(_IsolatedState):
         kb.get_value.side_effect = OSError("gone mid-restore")
         self.assertIsNone(
             self._restore_with(mock.Mock(return_value=kb)).get("brightness_echo"))
+
+
+class DriftLogDeviceGateTests(_IsolatedState):
+    """A baseline from another keyboard did not drift, it was replaced.
+
+    _undo_lossy_brightness already refuses an echo from another device; the
+    drift line has to refuse the same way or swapping boards reports a walk
+    that never happened.
+    """
+
+    def _capture_with_previous(self, previous_device):
+        raw = {"effect": 16, "speed": 127, "brightness": 40, "color": [0, 255]}
+        states.save_state({
+            "active": None, "generation": 1, "baseline": None,
+            "last_baseline": {**raw, "brightness": 120},
+            "last_baseline_device": previous_device,
+        })
+        kb = mock.MagicMock()
+        kb.__enter__ = mock.Mock(return_value=kb)
+        kb.__exit__ = mock.Mock(return_value=False)
+        kb.snapshot.return_value = raw
+        kb.apply.return_value = True
+        written = []
+        with mock.patch.object(states.via, "Keyboard",
+                               mock.Mock(return_value=kb)), \
+             mock.patch.object(states, "log", side_effect=written.append):
+            states.set_state("done")
+        return [line for line in written if "baseline brightness" in line]
+
+    def test_a_baseline_from_another_board_is_not_reported_as_drift(self):
+        other = {**states._device_identity(), "product_id": 0x9999}
+        self.assertEqual(self._capture_with_previous(other), [])
+
+    def test_the_same_board_still_reports_its_drift(self):
+        """Or the gate above would pass by silencing everything."""
+        lines = self._capture_with_previous(states._device_identity())
+        self.assertEqual(len(lines), 1, lines)
+        self.assertIn("120", lines[0])
+        self.assertIn("40", lines[0])
+
+    def test_off_mode_does_not_report_its_own_blackout(self):
+        """`restore: "off"` writes 0 on purpose and records no pair, so the
+        next capture reads back this program's own blackout. Calling that
+        drift puts a false line in the one place a real one has to show."""
+        with open(config.CONFIG_FILE, "w", encoding="utf-8") as f:
+            json.dump({"restore": "off"}, f)
+        self.assertEqual(self._capture_with_previous(states._device_identity()),
+                         [])
 
 
 class SignalGuardOrderingTests(_IsolatedState):

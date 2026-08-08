@@ -466,6 +466,31 @@ def _undo_lossy_brightness(snap, state, device_identity):
     return {**snap, "brightness": echo["written"]}
 
 
+def _log_brightness_drift(name, previous, current):
+    """One line when the stored baseline brightness moves, and only then.
+
+    #58's decay is invisible from the logs: the correction runs on every
+    capture, so logging when it fires would print on every cycle and say
+    nothing. What is worth a line is the value changing, because in a healthy
+    steady state it does not -- the correction hands back what was written, so
+    consecutive baselines agree and this stays quiet. A line therefore means
+    either the user turned the backlight up or down, or the correction did not
+    hold and the value is walking again.
+
+    Nothing is logged for the first capture: with no previous baseline there is
+    no movement to report, only a starting point. The caller is responsible for
+    only passing a previous baseline from the same keyboard -- swapping boards
+    changes the value without anything having drifted.
+    """
+    if not isinstance(previous, dict):
+        return
+    before = previous.get("brightness")
+    after = current.get("brightness")
+    if before == after:
+        return
+    log(f"set {name}: baseline brightness {before} -> {after}")
+
+
 def _looks_like_signal(snap, dev_cfg=None):
     """True when the snapshot matches a known signal pattern on every field.
 
@@ -571,7 +596,8 @@ def set_state(name, session=None, owner_prefix=None, owner_aliases=()):
     # each let an edit land between them and mix two generations. Deliberately
     # below the sweep: this is the first thing here that can raise, and #31
     # requires the sweep to have run before anything that can.
-    dev_cfg = load_config()["device"]
+    cfg = load_config()
+    dev_cfg = cfg["device"]
     pattern = patterns(dev_cfg)[name]
     # Open the device OUTSIDE the lock: enumerate/open/probe have no time
     # bound, and holding the 3s lock across them would make every
@@ -583,7 +609,7 @@ def set_state(name, session=None, owner_prefix=None, owner_aliases=()):
         return False
     try:
         return _set_state_locked(
-            kb, name, session, pattern, dev_cfg,
+            kb, name, session, pattern, cfg,
             owner_prefix, owner_aliases
         )
     except LockTimeout as e:
@@ -591,7 +617,7 @@ def set_state(name, session=None, owner_prefix=None, owner_aliases=()):
         return False
 
 
-def _set_state_locked(kb, name, session, pattern, dev_cfg,
+def _set_state_locked(kb, name, session, pattern, cfg,
                       owner_prefix=None, owner_aliases=()):
     with kb, _state_lock():
         # Re-read and re-sweep under the transition lock: the state may
@@ -603,20 +629,21 @@ def _set_state_locked(kb, name, session, pattern, dev_cfg,
             # when a branch below returns early (blocked / sticky error).
             save_state(state)
         return _apply_state(
-            kb, state, name, session, pattern, dev_cfg,
+            kb, state, name, session, pattern, cfg,
             owner_prefix, owner_aliases
         )
 
 
-def _apply_state(kb, state, name, session, pattern, dev_cfg,
+def _apply_state(kb, state, name, session, pattern, cfg,
                  owner_prefix, owner_aliases):
     """Run the guarded transition. Caller holds the state lock and the
     open keyboard, and has already swept (and persisted) expired owners.
 
-    Takes the config snapshot rather than a ready-made fingerprint so that
-    everything derived here — the fingerprint and the signal-shape guard's
-    patterns — comes from the same read as the board that is already open
-    (#44)."""
+    Takes the whole config snapshot rather than a ready-made fingerprint so
+    that everything derived here — the fingerprint, the signal-shape guard's
+    patterns, and whether restore will preserve a baseline at all — comes
+    from the same read as the board that is already open (#44)."""
+    dev_cfg = cfg["device"]
     device_identity = _device_identity(dev_cfg)
     if state["active"] == "error" and name != "error":
         log(f"set {name}: blocked by sticky error")
@@ -659,6 +686,15 @@ def _apply_state(kb, state, name, session, pattern, dev_cfg,
             # After the signal check, so the guard still sees what the device
             # actually reports; only the value we keep is corrected.
             snap = _undo_lossy_brightness(snap, state, device_identity)
+            # Two gates. The fingerprint one is what the baseline itself gets
+            # (#45): a value from another keyboard did not drift, it was
+            # replaced. The mode one is because "off" restores nothing — it
+            # writes 0 on purpose and records no pair, so the next capture
+            # reads back this program's own blackout. Reporting that as drift
+            # would put a false line in the one place a real one has to show.
+            if (cfg.get("restore", "baseline") != "off"
+                    and state.get("last_baseline_device") == device_identity):
+                _log_brightness_drift(name, state.get("last_baseline"), snap)
             state["baseline"] = snap
             state["last_baseline"] = snap
             state["last_baseline_device"] = device_identity

@@ -145,6 +145,55 @@ class UndoLossyBrightnessTests(unittest.TestCase):
         self.assertEqual(out["brightness"], 120)
 
 
+class DriftLogTests(unittest.TestCase):
+    """The log line exists to make #58 visible, so silence is the feature.
+
+    Logging when the correction fires would print on every cycle -- the
+    correction runs on every capture by design. Logging when the stored value
+    moves prints nothing while things work and one line when they do not.
+    """
+
+    def _lines(self, previous, current):
+        written = []
+        with mock.patch.object(states, "log", side_effect=written.append):
+            states._log_brightness_drift("done", previous, current)
+        return written
+
+    def test_a_steady_baseline_says_nothing(self):
+        self.assertEqual(self._lines(_snap(120), _snap(120)), [])
+
+    def test_the_first_capture_says_nothing(self):
+        """No previous baseline is a starting point, not movement."""
+        self.assertEqual(self._lines(None, _snap(120)), [])
+
+    def test_a_value_that_moved_is_reported_with_both_ends(self):
+        line, = self._lines(_snap(120), _snap(117))
+        self.assertIn("120", line)
+        self.assertIn("117", line)
+
+    def test_only_brightness_counts(self):
+        """Effect and color change for reasons that are not this bug."""
+        self.assertEqual(
+            self._lines(_snap(120), _snap(120, effect=3, color=[85, 255])), [])
+
+    def test_a_full_steady_run_stays_silent_end_to_end(self):
+        """The claim that matters: with the correction working, a run of
+        cycles produces no lines at all."""
+        written = []
+        state, device = {}, 120
+        with mock.patch.object(states, "log", side_effect=written.append):
+            for _ in range(10):
+                snap = states._undo_lossy_brightness(_snap(device), state,
+                                                     DEVICE)
+                states._log_brightness_drift("done", state.get("last"), snap)
+                state["last"] = snap
+                device = DecayTests.MEASURED[snap["brightness"]]
+                state["brightness_echo"] = {"written": snap["brightness"],
+                                            "readback": device,
+                                            "device": DEVICE}
+        self.assertEqual(written, [])
+
+
 class DecayTests(unittest.TestCase):
     """The cycle itself: capture a baseline, write it back, capture again."""
 

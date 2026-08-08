@@ -466,6 +466,29 @@ def _undo_lossy_brightness(snap, state, device_identity):
     return {**snap, "brightness": echo["written"]}
 
 
+def _log_brightness_drift(name, previous, current):
+    """One line when the stored baseline brightness moves, and only then.
+
+    #58's decay is invisible from the logs: the correction runs on every
+    capture, so logging when it fires would print on every cycle and say
+    nothing. What is worth a line is the value changing, because in a healthy
+    steady state it does not -- the correction hands back what was written, so
+    consecutive baselines agree and this stays quiet. A line therefore means
+    either the user turned the backlight up or down, or the correction did not
+    hold and the value is walking again.
+
+    Nothing is logged for the first capture: with no previous baseline there is
+    no movement to report, only a starting point.
+    """
+    if not isinstance(previous, dict):
+        return
+    before = previous.get("brightness")
+    after = current.get("brightness")
+    if before == after:
+        return
+    log(f"set {name}: baseline brightness {before} -> {after}")
+
+
 def _looks_like_signal(snap, dev_cfg=None):
     """True when the snapshot matches a known signal pattern on every field.
 
@@ -659,6 +682,7 @@ def _apply_state(kb, state, name, session, pattern, dev_cfg,
             # After the signal check, so the guard still sees what the device
             # actually reports; only the value we keep is corrected.
             snap = _undo_lossy_brightness(snap, state, device_identity)
+            _log_brightness_drift(name, state.get("last_baseline"), snap)
             state["baseline"] = snap
             state["last_baseline"] = snap
             state["last_baseline_device"] = device_identity

@@ -384,6 +384,45 @@ class EchoPersistenceTests(_IsolatedState):
             self._restore_with(mock.Mock(return_value=kb)).get("brightness_echo"))
 
 
+class DriftLogDeviceGateTests(_IsolatedState):
+    """A baseline from another keyboard did not drift, it was replaced.
+
+    _undo_lossy_brightness already refuses an echo from another device; the
+    drift line has to refuse the same way or swapping boards reports a walk
+    that never happened.
+    """
+
+    def _capture_with_previous(self, previous_device):
+        raw = {"effect": 16, "speed": 127, "brightness": 40, "color": [0, 255]}
+        states.save_state({
+            "active": None, "generation": 1, "baseline": None,
+            "last_baseline": {**raw, "brightness": 120},
+            "last_baseline_device": previous_device,
+        })
+        kb = mock.MagicMock()
+        kb.__enter__ = mock.Mock(return_value=kb)
+        kb.__exit__ = mock.Mock(return_value=False)
+        kb.snapshot.return_value = raw
+        kb.apply.return_value = True
+        written = []
+        with mock.patch.object(states.via, "Keyboard",
+                               mock.Mock(return_value=kb)), \
+             mock.patch.object(states, "log", side_effect=written.append):
+            states.set_state("done")
+        return [line for line in written if "baseline brightness" in line]
+
+    def test_a_baseline_from_another_board_is_not_reported_as_drift(self):
+        other = {**states._device_identity(), "product_id": 0x9999}
+        self.assertEqual(self._capture_with_previous(other), [])
+
+    def test_the_same_board_still_reports_its_drift(self):
+        """Or the gate above would pass by silencing everything."""
+        lines = self._capture_with_previous(states._device_identity())
+        self.assertEqual(len(lines), 1, lines)
+        self.assertIn("120", lines[0])
+        self.assertIn("40", lines[0])
+
+
 class SignalGuardOrderingTests(_IsolatedState):
     """The correction runs *after* the leftover-signal guard, and that ordering
     is load-bearing.

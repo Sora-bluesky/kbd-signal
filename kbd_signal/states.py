@@ -478,7 +478,9 @@ def _log_brightness_drift(name, previous, current):
     hold and the value is walking again.
 
     Nothing is logged for the first capture: with no previous baseline there is
-    no movement to report, only a starting point.
+    no movement to report, only a starting point. The caller is responsible for
+    only passing a previous baseline from the same keyboard -- swapping boards
+    changes the value without anything having drifted.
     """
     if not isinstance(previous, dict):
         return
@@ -682,7 +684,10 @@ def _apply_state(kb, state, name, session, pattern, dev_cfg,
             # After the signal check, so the guard still sees what the device
             # actually reports; only the value we keep is corrected.
             snap = _undo_lossy_brightness(snap, state, device_identity)
-            _log_brightness_drift(name, state.get("last_baseline"), snap)
+            # Same fingerprint gate the baseline itself gets (#45): a value
+            # from another keyboard did not drift, it was replaced.
+            if state.get("last_baseline_device") == device_identity:
+                _log_brightness_drift(name, state.get("last_baseline"), snap)
             state["baseline"] = snap
             state["last_baseline"] = snap
             state["last_baseline_device"] = device_identity

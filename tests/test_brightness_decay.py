@@ -422,6 +422,15 @@ class DriftLogDeviceGateTests(_IsolatedState):
         self.assertIn("120", lines[0])
         self.assertIn("40", lines[0])
 
+    def test_off_mode_does_not_report_its_own_blackout(self):
+        """`restore: "off"` writes 0 on purpose and records no pair, so the
+        next capture reads back this program's own blackout. Calling that
+        drift puts a false line in the one place a real one has to show."""
+        with open(config.CONFIG_FILE, "w", encoding="utf-8") as f:
+            json.dump({"restore": "off"}, f)
+        self.assertEqual(self._capture_with_previous(states._device_identity()),
+                         [])
+
 
 class SignalGuardOrderingTests(_IsolatedState):
     """The correction runs *after* the leftover-signal guard, and that ordering

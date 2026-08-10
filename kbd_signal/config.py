@@ -14,8 +14,20 @@ overridden so other VIA-compatible RGB keyboards work without code changes:
       "v3_channel": 3,                 // VIA v3 custom channel for rgb_matrix
       "reset_on_effect": false,        // device-specific reset workaround (see below)
       "effects": {"solid": 1, "breathing": 2}
+    },
+    "states": {                        // what each signal looks like (#49)
+      "waiting": {"effect": "breathing", "hue": 21, "sat": 255,
+                  "speed": 170, "brightness": 255},
+      "done": {"effect": "solid", "hue": 85, "sat": 255, "brightness": 255},
+      "error": {"effect": "breathing", "hue": 0, "sat": 255,
+                "speed": 255, "brightness": 255}
     }
   }
+
+Both blocks merge over the defaults field by field, so a config naming only
+`states.done.hue` keeps everything else. `states[*].effect` is a key of
+`device.effects`, not a raw index: the device block says what an index means
+on this board, the states block says which meaning each signal uses.
 
 `reset_on_effect` is a per-device workaround flag (default false) for the
 minority of firmware that, ~50-150 ms after an EFFECT change, forces the color
@@ -53,10 +65,87 @@ DEFAULT_DEVICE = {
 }
 
 
+# Per-state lighting. `effect` names an entry in the device's `effects` map
+# rather than a raw index, so the same states block works on any board: the
+# device block says what an index means there, this says which meaning each
+# signal uses. Adding an animation is adding a name to `effects` and using it
+# here. Hues are the QMK wheel: red=0, orange=21, green=85.
+#
+# `done` deliberately carries no speed. It is a solid effect, so speed has no
+# visible meaning, and _looks_like_signal only compares the keys a pattern
+# actually specifies.
+DEFAULT_STATES = {
+    "waiting": {"effect": "breathing", "hue": 21, "sat": 255,
+                "speed": 170, "brightness": 255},
+    "done": {"effect": "solid", "hue": 85, "sat": 255, "brightness": 255},
+    "error": {"effect": "breathing", "hue": 0, "sat": 255,
+              "speed": 255, "brightness": 255},
+}
+
+_STATE_BYTES = ("hue", "sat", "speed", "brightness")
+# Every key a pattern may carry. via.Keyboard.apply takes exactly these, so
+# anything else here becomes an unexpected keyword at the write.
+_STATE_FIELDS = {"effect", *_STATE_BYTES}
+
+
 def _to_int(value):
     if isinstance(value, str):
         return int(value, 0)  # accepts "0x3434" and "13364"
     return value
+
+
+def states(cfg, effects):
+    """Merge the user's states over the defaults, one state at a time.
+
+    Raises on anything malformed rather than falling back quietly. This block
+    is only ever hand-edited -- no command writes it -- so a typo that
+    silently kept the old colour would be reported as "my config does
+    nothing". The hook path catches the exception and logs it (cli.cmd_hook),
+    so surfacing it costs a log line, not a signal.
+    """
+    given = cfg.get("states") or {}
+    if not isinstance(given, dict):
+        raise ValueError('config "states" must be an object')
+    unknown = set(given) - set(DEFAULT_STATES)
+    if unknown:
+        raise ValueError(
+            f'config "states" has unknown state(s): {sorted(unknown)}; '
+            f'expected any of {sorted(DEFAULT_STATES)}')
+    merged = {}
+    for name, default in DEFAULT_STATES.items():
+        override = given.get(name) or {}
+        if not isinstance(override, dict):
+            raise ValueError(f'config states.{name} must be an object')
+        # Against every field a pattern may carry, not just the ones this
+        # state's defaults happen to name: `done` ships without a speed
+        # because a solid effect has none, but switching it to a breathing
+        # effect and setting a speed is a thing to want.
+        #
+        # A misspelled field would otherwise survive the merge and reach
+        # via.Keyboard.apply(**pattern) as an unexpected keyword -- raising
+        # only after _apply_state recorded the signal as active, leaving
+        # state.json claiming a light that was never written.
+        stray = set(override) - _STATE_FIELDS
+        if stray:
+            raise ValueError(
+                f'config states.{name} has unknown field(s): {sorted(stray)}; '
+                f'expected any of {sorted(_STATE_FIELDS)}')
+        state = {**default, **override}
+        if state["effect"] not in effects:
+            raise ValueError(
+                f'config states.{name}.effect "{state["effect"]}" is not in '
+                f'device.effects {sorted(effects)}')
+        for field in _STATE_BYTES:
+            if field not in state:
+                continue
+            value = state[field]
+            if (not isinstance(value, int) or isinstance(value, bool)
+                    or not 0 <= value < 256):
+                raise ValueError(
+                    f"config states.{name}.{field} must be 0-255, got "
+                    f"{value!r}")
+        merged[name] = state
+    return merged
 
 
 def load():
@@ -72,6 +161,12 @@ def load():
     device["effects"] = {**DEFAULT_DEVICE["effects"],
                          **(device.get("effects") or {})}
     cfg["device"] = device
+    # `states` is deliberately NOT merged into the returned config. `setup`
+    # writes back whatever load() hands it, so filling the defaults in here
+    # would freeze them into every config.json it touches -- and a later
+    # release changing a default colour would silently never reach those
+    # users. Callers that need the resolved patterns go through
+    # states.patterns(), which merges on the way out.
     return cfg
 
 

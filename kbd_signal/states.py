@@ -62,21 +62,23 @@ LOG_MAX_BYTES = 1024 * 1024  # 1 MB
 STATE_NAMES = ("waiting", "done", "error")
 
 
-def patterns(dev_cfg=None):
-    """State -> lighting pattern, with effect indices from config so other
-    VIA keyboards (different enabled-animation lists) can remap them.
-    QMK hue wheel: red=0, orange=21, green=85.
+def patterns(cfg=None):
+    """State -> lighting pattern, resolved from config.
 
-    Pass the caller's config snapshot to keep the indices from the same read
+    Two layers, both overridable. `states` says what each signal should look
+    like -- colour, speed, brightness, and which animation by name. `device`'s
+    `effects` says what that name is on this board, so the same states block
+    survives moving to a keyboard with a different enabled-animation list
+    (#49).
+
+    Pass the caller's config snapshot to keep every field from the same read
     as the board being opened (#44); omit it and the live config is read."""
-    fx = (config.device() if dev_cfg is None else dev_cfg)["effects"]
+    cfg = config.load() if cfg is None else cfg
+    fx = cfg["device"]["effects"]
     return {
-        "waiting": dict(effect=fx["breathing"], hue=21, sat=255,
-                        speed=170, brightness=255),
-        "done": dict(effect=fx["solid"], hue=85, sat=255,
-                     brightness=255),
-        "error": dict(effect=fx["breathing"], hue=0, sat=255,
-                      speed=255, brightness=255),
+        name: {**{k: v for k, v in state.items() if k != "effect"},
+               "effect": fx[state["effect"]]}
+        for name, state in config.states(cfg, fx).items()
     }
 
 
@@ -491,7 +493,7 @@ def _log_brightness_drift(name, previous, current):
     log(f"set {name}: baseline brightness {before} -> {after}")
 
 
-def _looks_like_signal(snap, dev_cfg=None):
+def _looks_like_signal(snap, cfg=None):
     """True when the snapshot matches a known signal pattern on every field.
 
     A baseline captured while the keyboard still shows an earlier signal (a
@@ -515,7 +517,7 @@ def _looks_like_signal(snap, dev_cfg=None):
     variant) falls back to the last non-signal capture; with none stored
     yet, restore can only go dark. That cosmetic cost is strictly better
     than restoring the signal forever."""
-    for pattern in patterns(dev_cfg).values():
+    for pattern in patterns(cfg).values():
         if snap["effect"] != pattern["effect"]:
             continue
         if snap["brightness"] not in (pattern["brightness"], 0):
@@ -598,7 +600,7 @@ def set_state(name, session=None, owner_prefix=None, owner_aliases=()):
     # requires the sweep to have run before anything that can.
     cfg = load_config()
     dev_cfg = cfg["device"]
-    pattern = patterns(dev_cfg)[name]
+    pattern = patterns(cfg)[name]
     # Open the device OUTSIDE the lock: enumerate/open/probe have no time
     # bound, and holding the 3s lock across them would make every
     # concurrent hook time out and drop its signal on a slow device.
@@ -666,7 +668,7 @@ def _apply_state(kb, state, name, session, pattern, cfg,
         except OSError as e:
             log(f"set {name}: snapshot failed ({e})")
             return False
-        if _looks_like_signal(snap, dev_cfg):
+        if _looks_like_signal(snap, cfg):
             # A leftover signal must not become the user's setting. Reuse
             # requires byte-range safety through _valid_snapshot and an
             # exact current-device identity match; otherwise baseline stays
@@ -675,7 +677,7 @@ def _apply_state(kb, state, name, session, pattern, cfg,
             last = state.get("last_baseline")
             if (_valid_snapshot(last)
                     and state.get("last_baseline_device") == device_identity
-                    and not _looks_like_signal(last, dev_cfg)):
+                    and not _looks_like_signal(last, cfg)):
                 state["baseline"] = last
                 log(f"set {name}: snapshot matches a signal pattern, "
                     f"using last known baseline")

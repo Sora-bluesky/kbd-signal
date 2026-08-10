@@ -81,6 +81,33 @@ The state dir is `%LOCALAPPDATA%\kbd-signal` on Windows and `~/Library/Applicati
 - `"baseline"` (default): restore the pre-signal effect and brightness
 - `"off"`: restore to brightness 0 (for people who normally keep the backlight dark). The stored effect/color/speed are still written back, so waking the backlight with Fn shows your own settings
 
+### What each signal looks like (`states` in `config.json`)
+
+Colour, speed and brightness per state. Omit the block and you get the shipped
+orange / green / red; override only the fields you want to change.
+
+```json
+{
+  "states": {
+    "waiting": {"effect": "solid", "hue": 0},
+    "done": {"effect": "solid", "hue": 85}
+  }
+}
+```
+
+`effect` names an entry in `device.effects` rather than a raw index, so the
+same block keeps working on a board whose enabled-animation list differs — the
+device block says what an index means there, this says which meaning each
+signal uses. To use an animation the defaults never named, add it to
+`effects` (`"effects": {"solid": 1, "breathing": 2, "rainbow": 12}`) and name
+it here.
+
+Hues are the QMK wheel: red 0, orange 21, green 85. `hue`, `sat`, `speed` and
+`brightness` are all 0-255. A value outside that range, an unknown effect name,
+or a misspelled state is rejected with a message naming it — the block is only
+ever hand-edited, so a typo that quietly kept the old colour would look like
+the setting doing nothing.
+
 The Fn backlight on/off flag is not readable over VIA, which is why `"off"` exists.
 
 ### Troubleshooting

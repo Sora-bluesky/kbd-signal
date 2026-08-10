@@ -83,6 +83,9 @@ DEFAULT_STATES = {
 }
 
 _STATE_BYTES = ("hue", "sat", "speed", "brightness")
+# Every key a pattern may carry. via.Keyboard.apply takes exactly these, so
+# anything else here becomes an unexpected keyword at the write.
+_STATE_FIELDS = {"effect", *_STATE_BYTES}
 
 
 def _to_int(value):
@@ -113,6 +116,20 @@ def states(cfg, effects):
         override = given.get(name) or {}
         if not isinstance(override, dict):
             raise ValueError(f'config states.{name} must be an object')
+        # Against every field a pattern may carry, not just the ones this
+        # state's defaults happen to name: `done` ships without a speed
+        # because a solid effect has none, but switching it to a breathing
+        # effect and setting a speed is a thing to want.
+        #
+        # A misspelled field would otherwise survive the merge and reach
+        # via.Keyboard.apply(**pattern) as an unexpected keyword -- raising
+        # only after _apply_state recorded the signal as active, leaving
+        # state.json claiming a light that was never written.
+        stray = set(override) - _STATE_FIELDS
+        if stray:
+            raise ValueError(
+                f'config states.{name} has unknown field(s): {sorted(stray)}; '
+                f'expected any of {sorted(_STATE_FIELDS)}')
         state = {**default, **override}
         if state["effect"] not in effects:
             raise ValueError(

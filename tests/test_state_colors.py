@@ -131,6 +131,26 @@ class RejectionTests(_ConfigFile):
     def test_a_states_block_of_the_wrong_shape_is_rejected(self):
         self.assertIn("states", self._reason({"states": [1, 2, 3]}))
 
+    def test_a_misspelled_field_is_rejected_rather_than_carried(self):
+        """It would otherwise survive the merge and reach
+        via.Keyboard.apply(**pattern) as an unexpected keyword -- raising only
+        after the signal was recorded as active, so state.json would claim a
+        light that was never written."""
+        reason = self._reason({"states": {"done": {"brightnes": 42}}})
+        self.assertIn("brightnes", reason)
+        self.assertIn("brightness", reason)
+
+
+class FieldsNotInAStatesDefaultsTests(_ConfigFile):
+    def test_speed_can_be_added_to_done(self):
+        """`done` ships without one because a solid effect has no speed, but
+        switching it to a breathing effect and setting a speed is a thing to
+        want. The check is against the fields a pattern may carry, not the
+        ones this state happens to default."""
+        self.write({"states": {"done": {"effect": "breathing", "speed": 90}}})
+        done = states.patterns()["done"]
+        self.assertEqual((done["effect"], done["speed"]), (2, 90))
+
 
 class EndToEndTests(_ConfigFile):
     """The configured colour has to reach the keyboard, not just patterns()."""

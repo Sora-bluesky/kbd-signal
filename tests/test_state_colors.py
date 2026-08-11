@@ -131,6 +131,20 @@ class RejectionTests(_ConfigFile):
     def test_a_states_block_of_the_wrong_shape_is_rejected(self):
         self.assertIn("states", self._reason({"states": [1, 2, 3]}))
 
+    def test_a_falsy_state_override_is_rejected_not_silently_dropped(self):
+        """`or {}` turned 0, "", [] and False into an empty override before
+        the type check could see them, so the state quietly kept its
+        defaults -- the "my config does nothing" failure this function exists
+        to prevent. Only a truthy wrong type reached the check, which is why
+        the sibling test above passed while these did not."""
+        for falsy in (0, "", [], False):
+            reason = self._reason({"states": {"done": falsy}})
+            self.assertIn("done", reason, falsy)
+
+    def test_a_falsy_states_block_is_rejected_too(self):
+        for falsy in (0, "", [], False):
+            self.assertIn("states", self._reason({"states": falsy}), falsy)
+
     def test_a_misspelled_field_is_rejected_rather_than_carried(self):
         """It would otherwise survive the merge and reach
         via.Keyboard.apply(**pattern) as an unexpected keyword -- raising only

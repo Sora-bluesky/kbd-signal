@@ -7,6 +7,7 @@ mocks set_value/get_value and therefore assumes all of that is correct.
 """
 
 import unittest
+from unittest import mock
 
 import fake_hid
 from kbd_signal import via
@@ -314,14 +315,32 @@ class SettleBrightnessTests(unittest.TestCase):
                          "v3 must not attempt a confirmation read")
 
     def test_v3_still_rewrites_across_the_revert_window(self):
-        """The rewrites are what #34 actually added; only the read-back went."""
+        """The rewrites are what #34 actually added; only the read-back went.
+
+        The clock is virtual because the count is otherwise a question about
+        the scheduler: asking for more than one write means asking real time
+        to pass, and a runner that returns late from sleep(0.01) after 50 ms
+        leaves the loop already past the hold window with one write done
+        (#76 -- observed once on macOS CI). Only time is faked; the writes
+        still go through the device simulator.
+        """
         dev = fake_hid.FakeViaDevice(protocol=13, max_brightness=255)
+        now = [0.0]
+
+        def sleep(seconds):
+            now[0] += seconds
+
         with fake_hid.attached(dev):
             with _open(dev) as kb:
                 dev.packets.clear()
-                kb.settle_brightness(77, settle=0.01, hold=0.05)
+                with mock.patch.object(via.time, "monotonic",
+                                       lambda: now[0]), \
+                        mock.patch.object(via.time, "sleep", sleep):
+                    kb.settle_brightness(77, settle=0.01, hold=0.05)
         writes = self._brightness_sets(dev)
-        self.assertGreater(len(writes), 1)
+        # One write per settle until the hold window closes: 0.05 / 0.01, and
+        # the write that carries the clock onto the boundary is the last one.
+        self.assertEqual(len(writes), 5)
         self.assertEqual({p[4] for p in writes}, {77})
 
     def test_v2_still_confirms_by_read_back(self):

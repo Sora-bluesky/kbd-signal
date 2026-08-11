@@ -113,22 +113,48 @@ class SetColorTests(unittest.TestCase):
         )
 
     def test_set_color_default_hold_follows_device_gate(self):
-        # A reset-prone device holds dark past the reset window; a normal one
-        # doesn't, so its first read-back is trusted immediately.
+        """A reset-prone device must keep rewriting past the reset window while
+        a normal device can trust its first read-back.
+
+        The clock is virtual because this loop never sleeps while holding --
+        it `continue`s before the sleep -- so the write count is set by how
+        much work fits in `budget` of real time. A single 60 ms stall anywhere
+        in the first few iterations was enough to drop it to one cycle and
+        break the comparison (#76). Time is charged to the writes instead.
+        """
+        now = [0.0]
+
+        def set_value(*_args):
+            now[0] += 0.01  # a write costs 10 ms of virtual time
+
+        def sleep(seconds):
+            now[0] += seconds
+
         reset_kb = self._kb(reset_on_effect=True)
-        reset_kb.set_value = mock.Mock()
-        # Never matches: forces the loop to run until budget, so a nonzero hold
-        # means at least a couple of write cycles before giving up.
+        reset_kb.set_value = mock.Mock(side_effect=set_value)
+        # Never matches: forces the loop to run until budget, so the default
+        # hold keeps the reset-prone device rewriting without a read.
         reset_kb.get_value = mock.Mock(return_value=[0, 0])
-        via.Keyboard.set_color(reset_kb, 85, 255, budget=0.05)
-        held_writes = reset_kb.set_value.call_count
 
         plain_kb = self._kb(reset_on_effect=False)
-        plain_kb.set_value = mock.Mock()
+        plain_kb.set_value = mock.Mock(side_effect=set_value)
         plain_kb.get_value = mock.Mock(return_value=[85, 255])  # confirms at once
-        self.assertTrue(via.Keyboard.set_color(plain_kb, 85, 255))
+
+        with mock.patch.object(via.time, "monotonic", lambda: now[0]), \
+                mock.patch.object(via.time, "sleep", sleep):
+            via.Keyboard.set_color(reset_kb, 85, 255, budget=0.05)
+            held_writes = reset_kb.set_value.call_count
+            self.assertTrue(via.Keyboard.set_color(plain_kb, 85, 255))
+
+        # The deadline is checked at the loop head, so the budget bounds where
+        # a cycle may start, not where it ends: entries at 0.00, 0.02 and 0.04
+        # are all under 0.05, and the third carries the clock to 0.06 and out.
+        # Three cycles of two writes each.
+        self.assertEqual(held_writes, 6)
         # hold=0 means it trusts the first read: one write cycle (2 set_values).
         self.assertEqual(plain_kb.set_value.call_count, 2)
+        # The exact counts above are arithmetic; this is the behaviour they
+        # exist to pin, and it stays readable if the constants ever move.
         self.assertGreater(held_writes, plain_kb.set_value.call_count)
 
     def test_read_back_tries_capped_by_remaining_budget(self):
@@ -273,7 +299,6 @@ class SettleBrightnessTests(unittest.TestCase):
         # Total elapsed: at most the budget plus one in-flight write; an
         # unclamped final sleep would push past this.
         self.assertLessEqual(now[0], 2.05)
-
 
 
 if __name__ == "__main__":

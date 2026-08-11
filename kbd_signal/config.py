@@ -103,7 +103,8 @@ def states(cfg, effects):
     nothing". The hook path catches the exception and logs it (cli.cmd_hook),
     so surfacing it costs a log line, not a signal.
     """
-    given = cfg.get("states") or {}
+    given = cfg.get("states")
+    given = {} if given is None else given
     if not isinstance(given, dict):
         raise ValueError('config "states" must be an object')
     unknown = set(given) - set(DEFAULT_STATES)
@@ -113,7 +114,14 @@ def states(cfg, effects):
             f'expected any of {sorted(DEFAULT_STATES)}')
     merged = {}
     for name, default in DEFAULT_STATES.items():
-        override = given.get(name) or {}
+        # `is None`, not `or`: 0, "", [] and False are all falsy, so the `or`
+        # form turned them into {} before the type check below could see
+        # them -- exactly the silent fallback this function exists to avoid.
+        # Third time an `or` default has bitten this codebase (via.py's
+        # dev_cfg, and a lane tool where Path("") was truthy instead), so it
+        # is written out rather than left as a style preference.
+        override = given.get(name)
+        override = {} if override is None else override
         if not isinstance(override, dict):
             raise ValueError(f'config states.{name} must be an object')
         # Against every field a pattern may carry, not just the ones this

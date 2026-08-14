@@ -157,6 +157,12 @@ Codexには`SessionEnd`がないため、承認待ちの最中にアプリを強
 
 旧`notify`の`agent-turn-complete`入力も引き続き受け付ける。ただし、承認待ちを取得できず、デスクトップアプリの通知経路とも競合するため、新規設定には使わない。
 
+### 複数セッションの扱い
+
+`state.json`では所有者を`製品 / session_id / agent_id`の組み合わせで管理する。Claude Code / Codex / GrokのIDが同じでも衝突せず、メインセッションの完了は別製品・別セッションの承認待ちを解除しない。状態ファイルの読み書きはプロセス間ロックで直列化する。
+
+ロールバックする場合は、`~/.codex/hooks.json`から上記のkbd-signalコマンドを持つイベントだけを削除してCodexを再起動する。`notify`は変更していないため、デスクトップアプリ側の通知設定はそのまま残る。
+
 ### Grok(v1.2.0〜)
 
 Grok Build(xAI の `grok` CLI)は Claude Code 互換のライフサイクルフックを備えており、kbd-signal は3つ目のソースとしてこれを読む。grok 1.0.3 で検証済み。
@@ -173,7 +179,7 @@ Grok Build(xAI の `grok` CLI)は Claude Code 互換のライフサイクルフ�
 
 #### Claude Code との違い
 
-- `PermissionRequest` イベントが存在しない。承認待ちは `Notification` の type `permission_prompt` で届く(matcher を持つのはこのエントリだけ)
+- `PermissionRequest` イベントが存在しない。承認待ちは `Notification` の type `permission_prompt` で届く(matcher を持つのはこのエントリだけ)。現時点で点灯するのはツール承認のプロンプトだけで、plan のレビュー待ちなど他の注意待ちは別の notification type を持ち、まだ通知対象にしていない
 - **matcher は正規表現**。Claude の `"*"` はここでは不正な正規表現になる。全部にマッチさせたいときは matcher を省略する
 - payload は camelCase(`hookEventName` / `sessionId`)、イベント値は小文字スネーク(`"stop"`)。`kbd-signal hook grok` が内部語彙へ変換し、Grok セッションは独自の `grok:` owner を持つ
 - `Stop` は2回発火する。ターン完了時(`reason: "end_turn"`)と、セッション終了時の観測専用の1回(実測: `reason: "shutdown"`)。グリーンが出るのは `end_turn` のときだけで、終了時の分は古い承認待ちの掃除に使う
@@ -189,10 +195,6 @@ Grok Build(xAI の `grok` CLI)は Claude Code 互換のライフサイクルフ�
 Grok はデフォルトで `~/.claude/settings.json` のフックも読むため、既存の `kbd-signal hook claude` エントリは Grok セッション内でも発火する。これは設計上の no-op で、Claude 入口はスネークケースのキーを探すので Grok の camelCase payload からは `session_id` が見つからず、ログを1行書いて exit 0 する(実測)。Grok セッションに `claude:` owner が作られることはなく、二重通知も起きない。`~/.grok/config.toml` に `[compat.claude] hooks = false` を書けばこのログは消えるが、Grok 内の **Claude フック全部**が止まるので、切る前に影響を確認すること。
 
 ロールバックは `~/.grok/hooks/kbd-signal.json` を削除して `/hooks` の `r` で再読込(または grok を再起動)。
-
-`state.json`では所有者を`製品 / session_id / agent_id`の組み合わせで管理する。Claude Code / Codex / GrokのIDが同じでも衝突せず、メインセッションの完了は別製品・別セッションの承認待ちを解除しない。状態ファイルの読み書きはプロセス間ロックで直列化する。
-
-ロールバックする場合は、`~/.codex/hooks.json`から上記のkbd-signalコマンドを持つイベントだけを削除してCodexを再起動する。`notify`は変更していないため、デスクトップアプリ側の通知設定はそのまま残る。
 
 ## プロトコルメモ(一次情報+実機確認)
 

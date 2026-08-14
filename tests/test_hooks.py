@@ -316,6 +316,13 @@ class GrokHookDispatchTests(unittest.TestCase):
                 "notificationType": 7,
                 "sessionId": "s1",
             },
+            # An unhashable wire value must degrade to "ignored", not to a
+            # TypeError swallowed by the entry point's blanket except.
+            {
+                "hookEventName": "notification",
+                "notificationType": ["permission_prompt"],
+                "sessionId": "s1",
+            },
         )
         for payload in payloads:
             with self.subTest(payload=payload):
@@ -405,7 +412,9 @@ class GrokHookDispatchTests(unittest.TestCase):
                 self.mocks["set_state"].assert_not_called()
 
     def test_unknown_stop_reasons_release_only_owner(self):
-        for reason in (None, "future_reason"):
+        # The dict reason pins the unhashable case: it must take the same
+        # conservative owner-release path instead of raising on the set lookup.
+        for reason in (None, "future_reason", {"value": "shutdown"}):
             with self.subTest(reason=reason):
                 self._reset_mocks()
                 payload = {

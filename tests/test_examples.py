@@ -224,47 +224,51 @@ class GrokExampleConfigTests(unittest.TestCase):
         from kbd_signal import hooks
 
         config = self._load_example()
+        # Registered event -> (representative payload, canonical dispatch).
+        # Pinning the canonical name (not just "is dispatched") catches a
+        # mapping regression such as Stop losing its reason branch.
         payloads = {
-            "Notification": {
+            "Notification": ({
                 "hookEventName": "notification",
                 "notificationType": "permission_prompt",
-            },
-            "PostToolUse": {
+            }, "PermissionRequest"),
+            "PostToolUse": ({
                 "hookEventName": "post_tool_use",
-            },
-            "PostToolUseFailure": {
+            }, "PostToolUse"),
+            "PostToolUseFailure": ({
                 "hookEventName": "post_tool_use_failure",
-            },
-            "PermissionDenied": {
+            }, "PostToolUse"),
+            "PermissionDenied": ({
                 "hookEventName": "permission_denied",
-            },
-            "StopFailure": {
+            }, "PostToolUse"),
+            "StopFailure": ({
                 "hookEventName": "stop_failure",
-            },
-            "SubagentStop": {
+            }, "SessionEnd"),
+            "SubagentStop": ({
                 "hookEventName": "subagent_stop",
-            },
-            "SessionStart": {
+            }, "SubagentStop"),
+            "SessionStart": ({
                 "hookEventName": "session_start",
-            },
-            "UserPromptSubmit": {
+            }, "SessionStart"),
+            "UserPromptSubmit": ({
                 "hookEventName": "user_prompt_submit",
-            },
-            "Stop": {
+            }, "UserPromptSubmit"),
+            "Stop": ({
                 "hookEventName": "stop",
                 "reason": "end_turn",
-            },
-            "SessionEnd": {
+            }, "Stop"),
+            "SessionEnd": ({
                 "hookEventName": "session_end",
-            },
+            }, "SessionEnd"),
         }
 
         self.assertEqual(set(payloads), set(config["hooks"]))
-        for event, payload in payloads.items():
+        for event, (payload, canonical) in payloads.items():
             with self.subTest(event=event):
-                self.assertIsNotNone(
+                self.assertEqual(
                     hooks._grok_event(payload),
-                    f"{event} is registered but ignored by the dispatcher",
+                    canonical,
+                    f"{event} is registered but dispatches unexpectedly",
                 )
 
 

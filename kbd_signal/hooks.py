@@ -218,7 +218,10 @@ def _grok_event(payload):
 
     if event == "notification":
         notification_type = _grok_notification_type(payload)
-        if notification_type in _GROK_WAITING_TYPES:
+        # isinstance before the set lookup: an unhashable wire value (list,
+        # dict) must degrade to "ignored", not to a swallowed TypeError.
+        if (isinstance(notification_type, str)
+                and notification_type in _GROK_WAITING_TYPES):
             return "PermissionRequest"
         return None
 
@@ -230,7 +233,8 @@ def _grok_event(payload):
         reason = payload.get("reason")
         if reason == "end_turn":
             return "Stop"
-        if reason in _GROK_SESSION_CLOSE_REASONS:
+        if (isinstance(reason, str)
+                and reason in _GROK_SESSION_CLOSE_REASONS):
             return "SessionEnd"
         # Future stop reasons must not signal success or erase sibling owners.
         return "PostToolUse"

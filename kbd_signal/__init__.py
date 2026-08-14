@@ -1,3 +1,3 @@
-"""kbd-signal: Claude Code / Codex status -> Keychron K8 Pro backlight."""
+"""kbd-signal: Claude Code / Codex / Grok status -> keyboard backlight."""
 
-__version__ = "1.1.4"
+__version__ = "1.2.0"

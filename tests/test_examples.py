@@ -153,5 +153,120 @@ class ExampleConfigTests(unittest.TestCase):
         self.assertEqual(project["project"]["version"], __version__)
 
 
+class GrokExampleConfigTests(unittest.TestCase):
+    @staticmethod
+    def _repo_path(*parts):
+        return os.path.join(
+            os.path.dirname(os.path.dirname(__file__)),
+            *parts,
+        )
+
+    def _load_example(self):
+        path = self._repo_path("examples", "grok-hooks.json")
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+
+    def test_grok_hooks_example_is_valid_and_complete(self):
+        config = self._load_example()
+        required = {
+            "Notification",
+            "PostToolUse",
+            "PostToolUseFailure",
+            "PermissionDenied",
+            "StopFailure",
+            "SubagentStop",
+            "SessionStart",
+            "UserPromptSubmit",
+            "Stop",
+            "SessionEnd",
+        }
+        self.assertEqual(set(config["hooks"]), required)
+
+        for event, groups in config["hooks"].items():
+            self.assertTrue(groups, f"{event} has no hook groups")
+            for group in groups:
+                handlers = group.get("hooks")
+                self.assertTrue(
+                    handlers,
+                    f"{event}: hook group has no handlers",
+                )
+                for handler in handlers:
+                    self.assertEqual(handler["type"], "command")
+                    self.assertEqual(
+                        handler["command"],
+                        "kbd-signal hook grok",
+                    )
+                    self.assertEqual(handler["timeout"], 5)
+
+    def test_grok_matchers_are_regexes_and_only_notification_has_one(self):
+        config = self._load_example()
+
+        for event, groups in config["hooks"].items():
+            for group in groups:
+                self.assertNotEqual(
+                    group.get("matcher"),
+                    "*",
+                    "Grok matchers are regexes; '*' is an invalid regex",
+                )
+                if event == "Notification":
+                    self.assertEqual(
+                        group.get("matcher"),
+                        "^permission_prompt$",
+                    )
+                else:
+                    self.assertNotIn(
+                        "matcher",
+                        group,
+                        f"{event} must omit matcher",
+                    )
+
+    def test_every_registered_grok_event_is_dispatched(self):
+        from kbd_signal import hooks
+
+        config = self._load_example()
+        payloads = {
+            "Notification": {
+                "hookEventName": "notification",
+                "notificationType": "permission_prompt",
+            },
+            "PostToolUse": {
+                "hookEventName": "post_tool_use",
+            },
+            "PostToolUseFailure": {
+                "hookEventName": "post_tool_use_failure",
+            },
+            "PermissionDenied": {
+                "hookEventName": "permission_denied",
+            },
+            "StopFailure": {
+                "hookEventName": "stop_failure",
+            },
+            "SubagentStop": {
+                "hookEventName": "subagent_stop",
+            },
+            "SessionStart": {
+                "hookEventName": "session_start",
+            },
+            "UserPromptSubmit": {
+                "hookEventName": "user_prompt_submit",
+            },
+            "Stop": {
+                "hookEventName": "stop",
+                "reason": "end_turn",
+            },
+            "SessionEnd": {
+                "hookEventName": "session_end",
+            },
+        }
+
+        self.assertEqual(set(payloads), set(config["hooks"]))
+        for event, payload in payloads.items():
+            with self.subTest(event=event):
+                self.assertIsNotNone(
+                    hooks._grok_event(payload),
+                    f"{event} is registered but ignored by the dispatcher",
+                )
+
+
 if __name__ == "__main__":
     unittest.main()

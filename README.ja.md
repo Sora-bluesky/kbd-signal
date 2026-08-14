@@ -2,7 +2,7 @@
 
 [English](README.md) | [日本語](README.ja.md)
 
-Claude Code / Codex のステータス(承認待ち・タスク完了・エラー)を **VIA 対応キーボードのバックライト演出**で通知する Windows / macOS 用 CLI(デフォルト設定は Keychron K8 Pro)。
+Claude Code / Codex / Grok のステータス(承認待ち・タスク完了・エラー)を **VIA 対応キーボードのバックライト演出**で通知する Windows / macOS 用 CLI(デフォルト設定は Keychron K8 Pro)。
 
 純正ファームウェアのまま、VIA raw HID プロトコル(usage page `0xFF60`)で RGB マトリクスを直接制御する。ファームウェア書き換え不要(v2/v3 プロトコルは自動判別)。
 
@@ -10,7 +10,7 @@ Claude Code / Codex のステータス(承認待ち・タスク完了・エラ�
 
 | 状態 | トリガー | 演出 |
 |------|---------|------|
-| `waiting` | Claude Code / Codex の承認ダイアログ表示(`PermissionRequest` hook) | オレンジのブリージング |
+| `waiting` | Claude Code / Codex の承認ダイアログ表示(`PermissionRequest` hook)、Grok の承認ダイアログ表示(`Notification` / `permission_prompt`) | オレンジのブリージング |
 | `done` | メインターン完了(`Stop` hook) | グリーン単色 5 秒 → 自動復元 |
 | `error` | 手動 `kbd-signal set error` | レッドの高速ブリージング |
 
@@ -53,7 +53,8 @@ hue は QMK のホイールで赤 0 / オレンジ 21 / 緑 85。`hue` / `sat` /
 - キーボード未接続時、hook 系コマンド(`hook` / `set` / `restore`)は exit 0 で静かに no-op(hooks を絶対にブロックしない)。診断系(`setup` / `export` / `detect` / `test` / `raw-effect`)は未検出を報告して exit 1
 - **VIA アプリ / Keychron Launcher と同時使用しない**(raw HID 書き込みが競合する)
 - Codex はライフサイクルフック対応版が必要。`codex features list` で `hooks` が有効か確認できる
-- Claude Code / Codex の複数セッションとサブエージェントを同時に追跡する。1件でも承認待ちが残っている間はオレンジを維持する
+- Grok はライフサイクルフック搭載の Grok Build が必要(1.0.3 で検証済み)。grok セッション内の `/hooks` で確認できる
+- Claude Code / Codex / Grok の複数セッションとサブエージェントを同時に追跡する。1件でも承認待ちが残っている間はオレンジを維持する
 
 ## プラットフォーム対応
 
@@ -98,6 +99,7 @@ kbd-signal test                  # 全演出を順に再生
 kbd-signal raw-effect <n>        # effect index 調査用
 kbd-signal hook claude           # Claude Code hooks 用(stdin JSON)
 kbd-signal hook codex [<json>]   # Codex hooks(stdin) / 旧 notify(argv) 用
+kbd-signal hook grok             # Grok Build hooks 用(stdin JSON)
 ```
 
 ### トラブルシューティング
@@ -155,9 +157,40 @@ Codexには`SessionEnd`がないため、承認待ちの最中にアプリを強
 
 旧`notify`の`agent-turn-complete`入力も引き続き受け付ける。ただし、承認待ちを取得できず、デスクトップアプリの通知経路とも競合するため、新規設定には使わない。
 
-### 複数セッションの扱い
+### Grok(v1.2.0〜)
 
-`state.json`では所有者を`製品 / session_id / agent_id`の組み合わせで管理する。Claude CodeとCodexのIDが同じでも衝突せず、メインセッションの完了は別製品・別セッションの承認待ちを解除しない。状態ファイルの読み書きはプロセス間ロックで直列化する。
+Grok Build(xAI の `grok` CLI)は Claude Code 互換のライフサイクルフックを備えており、kbd-signal は3つ目のソースとしてこれを読む。grok 1.0.3 で検証済み。
+
+1. [examples/grok-hooks.json](examples/grok-hooks.json) を `~/.grok/hooks/kbd-signal.json` として保存する。グローバルフックは常に trusted なので、プロジェクト単位の trust 手順は不要
+2. grok を起動して `/hooks` を開き、Hooks タブに kbd-signal のエントリが並ぶことを確認する。編集後は同タブの `r` で再読込できる(再起動不要)
+3. 承認が必要な操作を行い、待機中のオレンジと承認後の復元を確認する
+
+登録するコマンドは全イベント共通:
+
+```json
+{"type": "command", "command": "kbd-signal hook grok", "timeout": 5}
+```
+
+#### Claude Code との違い
+
+- `PermissionRequest` イベントが存在しない。承認待ちは `Notification` の type `permission_prompt` で届く(matcher を持つのはこのエントリだけ)
+- **matcher は正規表現**。Claude の `"*"` はここでは不正な正規表現になる。全部にマッチさせたいときは matcher を省略する
+- payload は camelCase(`hookEventName` / `sessionId`)、イベント値は小文字スネーク(`"stop"`)。`kbd-signal hook grok` が内部語彙へ変換し、Grok セッションは独自の `grok:` owner を持つ
+- `Stop` は2回発火する。ターン完了時(`reason: "end_turn"`)と、セッション終了時の観測専用の1回(実測: `reason: "shutdown"`)。グリーンが出るのは `end_turn` のときだけで、終了時の分は古い承認待ちの掃除に使う
+- Grok の `Stop` フックは blocking gate で、timeout のデフォルトは 600 秒。example は `timeout: 5` を明示し、フックは stdout に何も書かないため、ランプがターン終了を遅らせることはない
+- Esc / Ctrl+C の中断では `Stop` が発火しない。残った承認待ちは同セッションの次のプロンプトか、1時間の TTL で解除される
+- `PostToolUseFailure` と `PermissionDenied` を登録するのは、Grok が失敗・拒否したツールに `PostToolUse` を出さないため。無いと拒否後もオレンジが残る
+- `StopFailure`(API エラーによるターン終了)は色を出さずにそのセッションの承認待ちを解除する
+- Grok のサブエージェントは独立したセッションとして動く(1.0.3 実測)ため、子の承認待ちも同じセッション単位の解除で掃除される。なお grok のサブエージェントはデフォルト無効(`GROK_SUBAGENTS`)
+- ヘッドレス実行(`grok -p`)でもフックは発火するので、スクリプトからの grok 呼び出しでも完了時に同じグリーンが出る。ノイズに感じる場合は自分のコピーから `Stop` エントリを外す
+
+#### Claude 設定のスキャン
+
+Grok はデフォルトで `~/.claude/settings.json` のフックも読むため、既存の `kbd-signal hook claude` エントリは Grok セッション内でも発火する。これは設計上の no-op で、Claude 入口はスネークケースのキーを探すので Grok の camelCase payload からは `session_id` が見つからず、ログを1行書いて exit 0 する(実測)。Grok セッションに `claude:` owner が作られることはなく、二重通知も起きない。`~/.grok/config.toml` に `[compat.claude] hooks = false` を書けばこのログは消えるが、Grok 内の **Claude フック全部**が止まるので、切る前に影響を確認すること。
+
+ロールバックは `~/.grok/hooks/kbd-signal.json` を削除して `/hooks` の `r` で再読込(または grok を再起動)。
+
+`state.json`では所有者を`製品 / session_id / agent_id`の組み合わせで管理する。Claude Code / Codex / GrokのIDが同じでも衝突せず、メインセッションの完了は別製品・別セッションの承認待ちを解除しない。状態ファイルの読み書きはプロセス間ロックで直列化する。
 
 ロールバックする場合は、`~/.codex/hooks.json`から上記のkbd-signalコマンドを持つイベントだけを削除してCodexを再起動する。`notify`は変更していないため、デスクトップアプリ側の通知設定はそのまま残る。
 

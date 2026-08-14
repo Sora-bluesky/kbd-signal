@@ -1,4 +1,4 @@
-"""Dispatch Claude Code and Codex lifecycle events to lighting states.
+"""Dispatch Claude Code, Codex, and Grok lifecycle events to lighting states.
 
 Design rule: hook entry points must NEVER block or fail the agent.
 Every path exits 0, errors only go to the log file.
@@ -145,3 +145,143 @@ def handle_codex(argv, stdin=None):
         owner_prefix=session_scope,
         owner_aliases=aliases,
     )
+
+
+# Canonical event       State operation
+# PermissionRequest     Set waiting for one owner.
+# PostToolUse           Release one owner's waiting state.
+# SessionEnd            Release the session scope.
+# SessionStart          Release the session scope.
+# UserPromptSubmit      Release the session scope.
+# Stop                  Signal done and clean the session scope.
+# SubagentStop          Release one owner's waiting state.
+_GROK_EVENTS = {
+    "post_tool_use": "PostToolUse",
+    "post_tool_use_failure": "PostToolUse",
+    "permission_denied": "PostToolUse",
+    "stop_failure": "SessionEnd",
+    "subagent_stop": "SubagentStop",
+    "subagent_end": "SubagentStop",
+    "session_start": "SessionStart",
+    "user_prompt_submit": "UserPromptSubmit",
+    "session_end": "SessionEnd",
+}
+
+_GROK_WAITING_TYPES = frozenset({"permission_prompt"})
+
+_GROK_SESSION_CLOSE_REASONS = frozenset({
+    "channel_closed",
+    "shutdown",
+})
+
+_GROK_LOGGABLE_EVENTS = frozenset({
+    "session_start",
+    "user_prompt_submit",
+    "pre_tool_use",
+    "post_tool_use",
+    "post_tool_use_failure",
+    "permission_denied",
+    "stop",
+    "stop_failure",
+    "notification",
+    "subagent_start",
+    "subagent_stop",
+    "subagent_end",
+    "pre_compact",
+    "post_compact",
+    "session_end",
+})
+
+_GROK_LOGGABLE_NOTIFICATION_TYPES = frozenset({
+    "idle_prompt",
+    "permission_prompt",
+    "task_complete",
+})
+
+
+def _grok_notification_type(payload):
+    if "notificationType" in payload:
+        return payload["notificationType"]
+    return payload.get("notification_type")
+
+
+def _grok_safe_name(value, allowed):
+    if isinstance(value, str) and value in allowed:
+        return value
+    return "?"
+
+
+def _grok_event(payload):
+    event = payload.get("hookEventName")
+    if not isinstance(event, str):
+        return None
+
+    if event == "notification":
+        notification_type = _grok_notification_type(payload)
+        # isinstance before the set lookup: an unhashable wire value (list,
+        # dict) must degrade to "ignored", not to a swallowed TypeError.
+        if (isinstance(notification_type, str)
+                and notification_type in _GROK_WAITING_TYPES):
+            return "PermissionRequest"
+        return None
+
+    if event == "stop":
+        subagent_id = payload.get("subagentId")
+        if isinstance(subagent_id, str) and subagent_id:
+            return "SubagentStop"
+
+        reason = payload.get("reason")
+        if reason == "end_turn":
+            return "Stop"
+        if (isinstance(reason, str)
+                and reason in _GROK_SESSION_CLOSE_REASONS):
+            return "SessionEnd"
+        # Future stop reasons must not signal success or erase sibling owners.
+        return "PostToolUse"
+
+    return _GROK_EVENTS.get(event)
+
+
+def handle_grok(stdin=None):
+    """Handle Grok Build hook JSON received on stdin."""
+    try:
+        payload = _read_stdin(stdin, "grok")
+        if payload is None:
+            return
+
+        event = _grok_event(payload)
+        if event is None:
+            raw_event = payload.get("hookEventName")
+            safe_event = _grok_safe_name(
+                raw_event,
+                _GROK_LOGGABLE_EVENTS,
+            )
+            detail = ""
+            if raw_event == "notification":
+                safe_type = _grok_safe_name(
+                    _grok_notification_type(payload),
+                    _GROK_LOGGABLE_NOTIFICATION_TYPES,
+                )
+                detail = f" type={safe_type}"
+            states.log(
+                f"hook grok: event={safe_event}{detail} ignored"
+            )
+            return
+
+        normalized = {
+            "hook_event_name": event,
+            "session_id": payload.get("sessionId"),
+        }
+        if "permissionMode" in payload:
+            normalized["permission_mode"] = payload["permissionMode"]
+
+        # Grok subagents are independent sessions. Keeping every session on
+        # "main" ensures child waiting and child cleanup address the same owner.
+        _handle_lifecycle("grok", normalized)
+    except Exception as e:
+        # The Stop hook is a blocking gate, so even unexpected local failures
+        # must be contained without writing a response to stdout.
+        try:
+            states.log(f"hook grok: error ({type(e).__name__})")
+        except Exception:
+            pass

@@ -47,6 +47,12 @@ jobs:
         run: |
           '{"hook_event_name":"Stop","session_id":"ci"}' | kbd-signal hook claude
           if ($LASTEXITCODE -ne 0) { throw "hook must exit 0 without a keyboard" }
+      - name: Smoke - Grok Stop gate writes no stdout
+        shell: pwsh
+        run: |
+          $out = '{"hookEventName":"stop","reason":"end_turn","sessionId":"ci-smoke"}' | kbd-signal hook grok
+          if ($LASTEXITCODE -ne 0) { throw "Grok hook must exit 0 without a keyboard" }
+          if ($null -ne $out) { throw "Grok Stop hook must not write to stdout" }
       - name: Smoke - detect reports missing device cleanly (exit 1)
         shell: pwsh
         run: |

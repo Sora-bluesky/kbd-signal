@@ -1,0 +1,116 @@
+{
+  "description": "kbd-signal lifecycle notifications for Grok Build. Save as ~/.grok/hooks/kbd-signal.json; global hooks are always trusted. Matchers here are regular expressions, not Claude globs.",
+  "hooks": {
+    "Notification": [
+      {
+        "matcher": "^permission_prompt$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "kbd-signal hook grok",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "kbd-signal hook grok",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "kbd-signal hook grok",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PermissionDenied": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "kbd-signal hook grok",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "StopFailure": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "kbd-signal hook grok",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "kbd-signal hook grok",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "kbd-signal hook grok",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "kbd-signal hook grok",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "kbd-signal hook grok",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "kbd-signal hook grok",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}

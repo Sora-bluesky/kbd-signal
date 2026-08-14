@@ -2,7 +2,7 @@
 
 [English](README.md) | [日本語](README.ja.md)
 
-Turn a **VIA-compatible RGB keyboard's backlight into a status lamp** for AI coding agents on Windows and macOS (defaults target the Keychron K8 Pro). When Claude Code or Codex waits for your approval, your keyboard starts breathing orange — no need to watch the screen.
+Turn a **VIA-compatible RGB keyboard's backlight into a status lamp** for AI coding agents on Windows and macOS (defaults target the Keychron K8 Pro). When Claude Code, Codex, or Grok waits for your approval, your keyboard starts breathing orange — no need to watch the screen.
 
 Works on **stock firmware** (no flashing) by speaking the VIA raw HID protocol directly.
 
@@ -10,7 +10,7 @@ Works on **stock firmware** (no flashing) by speaking the VIA raw HID protocol d
 
 | State | Trigger | Effect |
 |-------|---------|--------|
-| `waiting` | Claude Code / Codex shows a permission dialog (`PermissionRequest` hook) | Orange breathing |
+| `waiting` | Claude Code / Codex show a permission dialog (`PermissionRequest` hook); Grok shows one (`Notification` / `permission_prompt`) | Orange breathing |
 | `done` | Main turn finished (`Stop` hook) | Solid green for 5 s, then auto-restore |
 | `error` | Manual `kbd-signal set error` | Fast red breathing |
 
@@ -23,7 +23,8 @@ Before signaling, the current lighting (effect / speed / brightness / color) is 
 - When the keyboard is absent (BT mode, unplugged), the hook-facing commands (`hook`, `set`, `restore`) silently no-op with exit 0 — hooks are never blocked. Diagnostic commands (`setup`, `export`, `detect`, `test`, `raw-effect`) report the missing device and exit 1
 - Do not run the VIA app / Keychron Launcher at the same time (concurrent raw HID writes race)
 - Codex requires a version with lifecycle hooks; run `codex features list` and confirm that `hooks` is enabled
-- Concurrent Claude Code / Codex sessions and subagents are tracked independently; orange remains active while any approval is pending
+- Grok requires Grok Build with lifecycle hooks (verified on 1.0.3); check with `/hooks` inside a grok session
+- Concurrent Claude Code / Codex / Grok sessions and subagents are tracked independently; orange remains active while any approval is pending
 
 ## Platform support
 
@@ -68,6 +69,7 @@ kbd-signal test                  # play all patterns, then restore
 kbd-signal raw-effect <n>        # set a raw effect index (debug)
 kbd-signal hook claude           # entry point for Claude Code hooks (JSON on stdin)
 kbd-signal hook codex [<json>]   # Codex hooks (stdin) / legacy notify (argv)
+kbd-signal hook grok             # Grok Build hooks (JSON on stdin)
 ```
 
 ### Restore mode (`config.json` in the state dir)
@@ -165,9 +167,42 @@ The old `agent-turn-complete` notify payload remains supported for compatibility
 
 ### Concurrent sessions
 
-Owners are keyed by product, `session_id`, and `agent_id`. A main-session completion therefore cannot clear another Claude/Codex session or one of its subagents. Updates to `state.json` remain serialized by the existing interprocess lock.
+Owners are keyed by product, `session_id`, and `agent_id`. A main-session completion therefore cannot clear another Claude/Codex/Grok session or one of its subagents. Updates to `state.json` remain serialized by the existing interprocess lock.
 
 To roll back, remove only the entries whose command invokes `kbd_signal hook codex` from `~/.codex/hooks.json`, then restart Codex. The desktop app's `notify` configuration remains untouched.
+
+## Grok integration (since v1.2.0)
+
+Grok Build (the xAI `grok` CLI) ships Claude Code-compatible lifecycle hooks, and kbd-signal reads them as a third source. Verified against grok 1.0.3.
+
+1. Save [examples/grok-hooks.json](examples/grok-hooks.json) as `~/.grok/hooks/kbd-signal.json` — global hooks are always trusted, no per-project trust step
+2. Start grok and run `/hooks`; the Hooks tab should list the kbd-signal entries. Press `r` there to reload after edits, no restart needed
+3. Trigger an approval and check: orange while waiting, restoration after approving
+
+Every event uses the same command:
+
+```json
+{"type": "command", "command": "kbd-signal hook grok", "timeout": 5}
+```
+
+### How Grok differs from Claude Code
+
+- No `PermissionRequest` event exists. An approval wait arrives as `Notification` with type `permission_prompt` — that entry is the only one with a matcher. Only tool-permission prompts light up today; other attention waits (a plan waiting for review, for example) have their own notification types and are not signaled yet
+- **Matchers are regular expressions.** Claude's `"*"` is an invalid regex here; an omitted matcher is what matches everything
+- The payload is camelCase (`hookEventName`, `sessionId`) with lowercase-snake event values (`"stop"`). `kbd-signal hook grok` translates to the internal vocabulary, and Grok sessions get their own `grok:` owners
+- `Stop` fires twice: on turn completion (`reason: "end_turn"`) and again, observe-only, when the session closes (measured: `reason: "shutdown"`). Green shows only for `end_turn`; the close fire just releases stale approvals
+- Grok's `Stop` hook is a blocking gate with a 600 s default timeout. The example pins `timeout: 5`, and the hook never writes to stdout, so the lamp cannot delay a turn from ending
+- Esc / Ctrl+C interrupts fire no `Stop` at all — a pending approval is cleared by the next prompt in that session, or by the one-hour TTL
+- `PostToolUseFailure` and `PermissionDenied` are registered because Grok fires no `PostToolUse` for a failed or denied tool; without them, orange would outlive a denial
+- `StopFailure` (a turn ended by an API error) releases the session's pending approvals without showing any color
+- A Grok subagent runs as its own session (measured on 1.0.3), so child approvals are cleaned by the same session-scoped release. Note grok ships subagents off by default (`GROK_SUBAGENTS`)
+- Headless runs (`grok -p`) fire hooks too, so scripted grok calls end with the same green flash as interactive ones. Drop the `Stop` entry from your copy if that is noise for you
+
+### Claude settings scanning
+
+Grok also reads `~/.claude/settings.json` hooks by default, so an existing `kbd-signal hook claude` entry fires inside Grok sessions as well. That is a no-op by design: the Claude entry point looks for snake_case keys, finds no `session_id` in Grok's camelCase payload, writes one log line, and exits 0 (measured). No `claude:` owner is created for a Grok session and nothing double-signals. Setting `[compat.claude] hooks = false` in `~/.grok/config.toml` silences those log lines, but it disables **all** your Claude hooks inside Grok — weigh that before flipping it.
+
+To roll back, delete `~/.grok/hooks/kbd-signal.json` and press `r` in `/hooks` (or restart grok).
 
 ## Protocol notes (verified on hardware)
 

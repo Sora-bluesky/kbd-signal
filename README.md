@@ -11,7 +11,7 @@ Works on **stock firmware** (no flashing) by speaking the VIA raw HID protocol d
 | State | Trigger | Effect |
 |-------|---------|--------|
 | `waiting` | Claude Code / Codex show a permission dialog (`PermissionRequest` hook); Grok shows one (`Notification` / `permission_prompt`) | Orange breathing |
-| `done` | Main turn finished (`Stop` hook) | Solid green for 5 s, then auto-restore |
+| `done` | Main turn finished (`Stop` hook; Cursor: `stop` with `status: completed`) | Solid green for 5 s, then auto-restore |
 | `error` | Manual `kbd-signal set error` | Fast red breathing |
 
 Before signaling, the current lighting (effect / speed / brightness / color) is snapshotted and restored afterwards. **Nothing is ever written to EEPROM** (RAM-only changes), so a power cycle always returns the keyboard to your saved settings.
@@ -24,7 +24,8 @@ Before signaling, the current lighting (effect / speed / brightness / color) is 
 - Do not run the VIA app / Keychron Launcher at the same time (concurrent raw HID writes race)
 - Codex requires a version with lifecycle hooks; run `codex features list` and confirm that `hooks` is enabled
 - Grok requires Grok Build with lifecycle hooks (verified on 1.0.3); check with `/hooks` inside a grok session
-- Concurrent Claude Code / Codex / Grok sessions and subagents are tracked independently; orange remains active while any approval is pending
+- Cursor support is completion-notify only (green on a finished turn) — Cursor's hooks API has no approval-wait event, so `waiting` cannot be signaled there yet (verified on 3.16.17)
+- Concurrent Claude Code / Codex / Grok / Cursor sessions and subagents are tracked independently; orange remains active while any approval is pending
 
 ## Platform support
 
@@ -70,6 +71,7 @@ kbd-signal raw-effect <n>        # set a raw effect index (debug)
 kbd-signal hook claude           # entry point for Claude Code hooks (JSON on stdin)
 kbd-signal hook codex [<json>]   # Codex hooks (stdin) / legacy notify (argv)
 kbd-signal hook grok             # Grok Build hooks (JSON on stdin)
+kbd-signal hook cursor           # Cursor hooks (JSON on stdin; completion only)
 ```
 
 ### Restore mode (`config.json` in the state dir)
@@ -167,7 +169,7 @@ The old `agent-turn-complete` notify payload remains supported for compatibility
 
 ### Concurrent sessions
 
-Owners are keyed by product, `session_id`, and `agent_id`. A main-session completion therefore cannot clear another Claude/Codex/Grok session or one of its subagents. Updates to `state.json` remain serialized by the existing interprocess lock.
+Owners are keyed by product, `session_id`, and `agent_id`. A main-session completion therefore cannot clear another Claude/Codex/Grok/Cursor session or one of its subagents. Updates to `state.json` remain serialized by the existing interprocess lock.
 
 To roll back, remove only the entries whose command invokes `kbd_signal hook codex` from `~/.codex/hooks.json`, then restart Codex. The desktop app's `notify` configuration remains untouched.
 
@@ -203,6 +205,28 @@ Every event uses the same command:
 Grok also reads `~/.claude/settings.json` hooks by default, so an existing `kbd-signal hook claude` entry fires inside Grok sessions as well. That is a no-op by design: the Claude entry point looks for snake_case keys, finds no `session_id` in Grok's camelCase payload, writes one log line, and exits 0 (measured). No `claude:` owner is created for a Grok session and nothing double-signals. Setting `[compat.claude] hooks = false` in `~/.grok/config.toml` silences those log lines, but it disables **all** your Claude hooks inside Grok — weigh that before flipping it.
 
 To roll back, delete `~/.grok/hooks/kbd-signal.json` and press `r` in `/hooks` (or restart grok).
+
+## Cursor integration (since v1.3.0) — completion notify only
+
+Cursor's hooks API (beta, verified on Cursor 3.16.17) has **no event for "the agent is waiting for your approval"** — there are open feature requests ([166947](https://forum.cursor.com/t/fire-a-hook-when-agent-waits-for-command-tool-approval/166947), [159912](https://forum.cursor.com/t/expose-agent-approval-waiting-state-via-hooks-cli-events/159912)), but today the closest hooks (`beforeShellExecution` and friends) fire for auto-approved runs too, which would mean orange during every tool run. So Cursor support is deliberately narrower than the other three sources: **green on a completed turn, nothing else**. No orange. If Cursor ships an approval event, `waiting` gets added.
+
+Setup: merge the single `stop` entry from [examples/cursor-hooks.json](examples/cursor-hooks.json) into your `~/.cursor/hooks.json` (`"version": 1` at top level; do not overwrite existing hooks). Cursor picks it up on the next session.
+
+```json
+{"command": "kbd-signal hook cursor", "timeout": 5}
+```
+
+Only `stop` is registered on purpose: Cursor hooks are synchronous and blocking, and with no waiting state to clean up, registering lifecycle events would just insert a Python launch into every prompt submission for nothing.
+
+What to expect, measured on 3.16.17:
+
+- A turn that ends normally (`status: "completed"`) flashes green for 5 s, then restores. An interrupted or failed turn shows nothing
+- kbd-signal writes nothing to stdout — load-bearing here, because Cursor reads a `stop` hook's stdout as JSON and a `followup_message` in it would resume the agent. The flip side: if *another* stop hook of yours returns `followup_message`, the agent resumes after the green flash — same class of caveat as Claude's stop gate
+- Cursor can also run hooks from your `~/.claude/settings.json` (third-party compatibility, gated by a Cursor setting). With that scan on, a `kbd-signal hook claude` entry fires inside Cursor sessions with Cursor's own payload; that is a logged no-op (the lowercase `"stop"` value matches no Claude branch — measured). Nothing double-signals once the cursor entry is installed
+- The reverse scan exists too: Grok reads `~/.cursor/hooks.json`, so `kbd-signal hook cursor` fires inside Grok sessions with Grok payloads — also a no-op (different envelope, pinned by tests)
+- `cursor-agent` (the Cursor CLI) reads the same hooks file but fires a subset of events; kbd-signal's cursor path is verified on the IDE only
+
+To roll back, remove the `stop` entry whose command invokes `kbd-signal hook cursor` from `~/.cursor/hooks.json`.
 
 ## Protocol notes (verified on hardware)
 

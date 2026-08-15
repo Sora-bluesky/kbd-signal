@@ -2,7 +2,7 @@
 
 [English](README.md) | [日本語](README.ja.md)
 
-Claude Code / Codex / Grok のステータス(承認待ち・タスク完了・エラー)を **VIA 対応キーボードのバックライト演出**で通知する Windows / macOS 用 CLI(デフォルト設定は Keychron K8 Pro)。
+Claude Code / Codex / Grok / Cursor のステータス(承認待ち・タスク完了・エラー。Cursor は完了通知のみ)を **VIA 対応キーボードのバックライト演出**で通知する Windows / macOS 用 CLI(デフォルト設定は Keychron K8 Pro)。
 
 純正ファームウェアのまま、VIA raw HID プロトコル(usage page `0xFF60`)で RGB マトリクスを直接制御する。ファームウェア書き換え不要(v2/v3 プロトコルは自動判別)。
 
@@ -11,7 +11,7 @@ Claude Code / Codex / Grok のステータス(承認待ち・タスク完了・�
 | 状態 | トリガー | 演出 |
 |------|---------|------|
 | `waiting` | Claude Code / Codex の承認ダイアログ表示(`PermissionRequest` hook)、Grok の承認ダイアログ表示(`Notification` / `permission_prompt`) | オレンジのブリージング |
-| `done` | メインターン完了(`Stop` hook) | グリーン単色 5 秒 → 自動復元 |
+| `done` | メインターン完了(`Stop` hook。Cursor は `stop` の `status: completed`) | グリーン単色 5 秒 → 自動復元 |
 | `error` | 手動 `kbd-signal set error` | レッドの高速ブリージング |
 
 通知前に現在の設定(effect/speed/brightness/color)をスナップショットし、通知後に復元する。**EEPROM には一切書き込まない**(RAM のみ変更)ため、電源再投入で必ずユーザー設定に戻る。
@@ -54,7 +54,8 @@ hue は QMK のホイールで赤 0 / オレンジ 21 / 緑 85。`hue` / `sat` /
 - **VIA アプリ / Keychron Launcher と同時使用しない**(raw HID 書き込みが競合する)
 - Codex はライフサイクルフック対応版が必要。`codex features list` で `hooks` が有効か確認できる
 - Grok はライフサイクルフック搭載の Grok Build が必要(1.0.3 で検証済み)。grok セッション内の `/hooks` で確認できる
-- Claude Code / Codex / Grok の複数セッションとサブエージェントを同時に追跡する。1件でも承認待ちが残っている間はオレンジを維持する
+- Cursor 対応は完了通知のみ(ターン完了で緑)。Cursor の hooks API に承認待ちイベントが無いため `waiting` は出せない(3.16.17 で検証済み)
+- Claude Code / Codex / Grok / Cursor の複数セッションとサブエージェントを同時に追跡する。1件でも承認待ちが残っている間はオレンジを維持する
 
 ## プラットフォーム対応
 
@@ -100,6 +101,7 @@ kbd-signal raw-effect <n>        # effect index 調査用
 kbd-signal hook claude           # Claude Code hooks 用(stdin JSON)
 kbd-signal hook codex [<json>]   # Codex hooks(stdin) / 旧 notify(argv) 用
 kbd-signal hook grok             # Grok Build hooks 用(stdin JSON)
+kbd-signal hook cursor           # Cursor hooks 用(stdin JSON・完了通知のみ)
 ```
 
 ### トラブルシューティング
@@ -159,7 +161,7 @@ Codexには`SessionEnd`がないため、承認待ちの最中にアプリを強
 
 ### 複数セッションの扱い
 
-`state.json`では所有者を`製品 / session_id / agent_id`の組み合わせで管理する。Claude Code / Codex / GrokのIDが同じでも衝突せず、メインセッションの完了は別製品・別セッションの承認待ちを解除しない。状態ファイルの読み書きはプロセス間ロックで直列化する。
+`state.json`では所有者を`製品 / session_id / agent_id`の組み合わせで管理する。Claude Code / Codex / Grok / CursorのIDが同じでも衝突せず、メインセッションの完了は別製品・別セッションの承認待ちを解除しない。状態ファイルの読み書きはプロセス間ロックで直列化する。
 
 ロールバックする場合は、`~/.codex/hooks.json`から上記のkbd-signalコマンドを持つイベントだけを削除してCodexを再起動する。`notify`は変更していないため、デスクトップアプリ側の通知設定はそのまま残る。
 
@@ -195,6 +197,28 @@ Grok Build(xAI の `grok` CLI)は Claude Code 互換のライフサイクルフ�
 Grok はデフォルトで `~/.claude/settings.json` のフックも読むため、既存の `kbd-signal hook claude` エントリは Grok セッション内でも発火する。これは設計上の no-op で、Claude 入口はスネークケースのキーを探すので Grok の camelCase payload からは `session_id` が見つからず、ログを1行書いて exit 0 する(実測)。Grok セッションに `claude:` owner が作られることはなく、二重通知も起きない。`~/.grok/config.toml` に `[compat.claude] hooks = false` を書けばこのログは消えるが、Grok 内の **Claude フック全部**が止まるので、切る前に影響を確認すること。
 
 ロールバックは `~/.grok/hooks/kbd-signal.json` を削除して `/hooks` の `r` で再読込(または grok を再起動)。
+
+### Cursor(v1.3.0〜・完了通知のみ)
+
+Cursor の hooks API(beta、Cursor 3.16.17 で実測)には**「エージェントが承認を待っている」ことを通知するイベントが存在しない**。公式フォーラムに機能要望が2件オープンしているが([166947](https://forum.cursor.com/t/fire-a-hook-when-agent-waits-for-command-tool-approval/166947) / [159912](https://forum.cursor.com/t/expose-agent-approval-waiting-state-via-hooks-cli-events/159912))、現状で最も近い `beforeShellExecution` 系は自動許可される実行でも毎回発火するため、waiting に流用すると「ツール実行中ずっとオレンジ」になってしまう。そのため Cursor 対応は他の3製品より意図的に狭い: **完了したターンで緑が出るだけ**。オレンジは出ない。Cursor が承認イベントを出したら `waiting` を追加する。
+
+導入: [examples/cursor-hooks.json](examples/cursor-hooks.json) の `stop` エントリ1つを `~/.cursor/hooks.json` にマージする(トップレベルに `"version": 1` が必要。既存の hooks は上書きしない)。次のセッションから有効になる。
+
+```json
+{"command": "kbd-signal hook cursor", "timeout": 5}
+```
+
+登録が `stop` だけなのは意図的な設計。Cursor の hooks は同期・blocking で、掃除すべき waiting が存在しない以上、ライフサイクルイベントを登録しても「毎プロンプト送信に Python 起動を挟むだけ」になるため。
+
+3.16.17 での実測に基づく挙動:
+
+- 正常に完了したターン(`status: "completed"`)で緑 5 秒 → 復元。中断・失敗したターンでは何も出ない
+- kbd-signal は stdout に何も書かない。Cursor は `stop` フックの stdout を JSON として読み、`followup_message` があるとエージェントを再開させるため、ここは特に重要。裏返すと、**別の stop フックが `followup_message` を返す構成では緑の後にエージェントが再開する**(Claude の stop gate と同種の注意点)
+- Cursor は設定でサードパーティ取り込みを有効にすると `~/.claude/settings.json` の hooks も実行する。その場合 `kbd-signal hook claude` エントリは Cursor セッション内でも発火するが、小文字の `"stop"` は Claude の分岐に一致しないため状態は変化しない(実測・ログ1行のみ)。cursor エントリ導入後も二重通知にはならない
+- 逆方向のスキャンもある: Grok は `~/.cursor/hooks.json` を読むため、`kbd-signal hook cursor` は Grok セッション内でも Grok payload で発火する — こちらも封筒が違うので no-op(テストでピン済み)
+- `cursor-agent`(CLI)は同じ hooks ファイルを読むが発火イベントはサブセット。kbd-signal の cursor 経路は IDE でのみ実機検証済み
+
+ロールバックは `~/.cursor/hooks.json` から `kbd-signal hook cursor` を呼ぶ `stop` エントリだけを削除する。
 
 ## プロトコルメモ(一次情報+実機確認)
 

@@ -91,6 +91,8 @@ def cmd_hook(args):
             hooks.handle_codex(args.rest)
         elif args.source == "grok":
             hooks.handle_grok()
+        elif args.source == "cursor":
+            hooks.handle_cursor()
     except Exception as e:  # never fail the calling agent
         states.log(f"hook {args.source} error: {e!r}")
     return 0
@@ -130,7 +132,10 @@ def main(argv=None):
     sp.set_defaults(fn=cmd_raw_effect)
 
     sp = sub.add_parser("hook", help="entry point for agent hooks")
-    sp.add_argument("source", choices=["claude", "codex", "grok"])
+    sp.add_argument(
+        "source",
+        choices=["claude", "codex", "grok", "cursor"],
+    )
     sp.add_argument("rest", nargs=argparse.REMAINDER)
     sp.set_defaults(fn=cmd_hook)
 

@@ -189,7 +189,7 @@ Every event uses the same command:
 
 ### How Grok differs from Claude Code
 
-- No `PermissionRequest` event exists. An approval wait arrives as `Notification` with type `permission_prompt` — that entry is the only one with a matcher. Only tool-permission prompts light up today; other attention waits (a plan waiting for review, for example) have their own notification types and are not signaled yet
+- No `PermissionRequest` event exists. An approval wait arrives as `Notification` with type `permission_prompt` — that entry is the only one with a matcher. Plan-approval waits use the same `permission_prompt` type (measured on 1.0.3), so a plan sitting on its review screen breathes orange just like a tool approval
 - **Matchers are regular expressions.** Claude's `"*"` is an invalid regex here; an omitted matcher is what matches everything
 - The payload is camelCase (`hookEventName`, `sessionId`) with lowercase-snake event values (`"stop"`). `kbd-signal hook grok` translates to the internal vocabulary, and Grok sessions get their own `grok:` owners
 - `Stop` fires twice: on turn completion (`reason: "end_turn"`) and again, observe-only, when the session closes (measured: `reason: "shutdown"`). Green shows only for `end_turn`; the close fire just releases stale approvals

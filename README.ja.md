@@ -181,7 +181,7 @@ Grok Build(xAI の `grok` CLI)は Claude Code 互換のライフサイクルフ�
 
 #### Claude Code との違い
 
-- `PermissionRequest` イベントが存在しない。承認待ちは `Notification` の type `permission_prompt` で届く(matcher を持つのはこのエントリだけ)。現時点で点灯するのはツール承認のプロンプトだけで、plan のレビュー待ちなど他の注意待ちは別の notification type を持ち、まだ通知対象にしていない
+- `PermissionRequest` イベントが存在しない。承認待ちは `Notification` の type `permission_prompt` で届く(matcher を持つのはこのエントリだけ)。plan のレビュー待ちも同じ `permission_prompt` で発火する(1.0.3 実測)ため、plan 承認画面で止まっている間もツール承認と同じようにオレンジが点く
 - **matcher は正規表現**。Claude の `"*"` はここでは不正な正規表現になる。全部にマッチさせたいときは matcher を省略する
 - payload は camelCase(`hookEventName` / `sessionId`)、イベント値は小文字スネーク(`"stop"`)。`kbd-signal hook grok` が内部語彙へ変換し、Grok セッションは独自の `grok:` owner を持つ
 - `Stop` は2回発火する。ターン完了時(`reason: "end_turn"`)と、セッション終了時の観測専用の1回(実測: `reason: "shutdown"`)。グリーンが出るのは `end_turn` のときだけで、終了時の分は古い承認待ちの掃除に使う

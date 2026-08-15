@@ -367,7 +367,7 @@ def handle_cursor(stdin=None):
         if not isinstance(session, str) or not session:
             session = payload.get("conversation_id")
         normalized = {
-            "hook_event_name": "Stop",
+            "hook_event_name": event,
             "session_id": session,
         }
         _handle_lifecycle("cursor", normalized)

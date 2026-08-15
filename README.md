@@ -222,7 +222,7 @@ What to expect, measured on 3.16.17:
 
 - A turn that ends normally (`status: "completed"`) flashes green for 5 s, then restores. An interrupted or failed turn shows nothing
 - kbd-signal writes nothing to stdout — load-bearing here, because Cursor reads a `stop` hook's stdout as JSON and a `followup_message` in it would resume the agent. The flip side: if *another* stop hook of yours returns `followup_message`, the agent resumes after the green flash — same class of caveat as Claude's stop gate
-- Cursor also runs hooks from your `~/.claude/settings.json` (third-party compatibility). A `kbd-signal hook claude` entry therefore fires inside Cursor sessions with Cursor's own payload; that is a logged no-op (the lowercase `"stop"` value matches no Claude branch — measured). Nothing double-signals once the cursor entry is installed
+- Cursor can also run hooks from your `~/.claude/settings.json` (third-party compatibility, gated by a Cursor setting). With that scan on, a `kbd-signal hook claude` entry fires inside Cursor sessions with Cursor's own payload; that is a logged no-op (the lowercase `"stop"` value matches no Claude branch — measured). Nothing double-signals once the cursor entry is installed
 - The reverse scan exists too: Grok reads `~/.cursor/hooks.json`, so `kbd-signal hook cursor` fires inside Grok sessions with Grok payloads — also a no-op (different envelope, pinned by tests)
 - `cursor-agent` (the Cursor CLI) reads the same hooks file but fires a subset of events; kbd-signal's cursor path is verified on the IDE only
 

@@ -214,7 +214,7 @@ Cursor の hooks API(beta、Cursor 3.16.17 で実測)には**「エージェン�
 
 - 正常に完了したターン(`status: "completed"`)で緑 5 秒 → 復元。中断・失敗したターンでは何も出ない
 - kbd-signal は stdout に何も書かない。Cursor は `stop` フックの stdout を JSON として読み、`followup_message` があるとエージェントを再開させるため、ここは特に重要。裏返すと、**別の stop フックが `followup_message` を返す構成では緑の後にエージェントが再開する**(Claude の stop gate と同種の注意点)
-- Cursor は `~/.claude/settings.json` の hooks も実行する(サードパーティ互換)。`kbd-signal hook claude` エントリは Cursor セッション内でも発火するが、小文字の `"stop"` は Claude の分岐に一致しないため状態は変化しない(実測・ログ1行のみ)。cursor エントリ導入後も二重通知にはならない
+- Cursor は設定でサードパーティ取り込みを有効にすると `~/.claude/settings.json` の hooks も実行する。その場合 `kbd-signal hook claude` エントリは Cursor セッション内でも発火するが、小文字の `"stop"` は Claude の分岐に一致しないため状態は変化しない(実測・ログ1行のみ)。cursor エントリ導入後も二重通知にはならない
 - 逆方向のスキャンもある: Grok は `~/.cursor/hooks.json` を読むため、`kbd-signal hook cursor` は Grok セッション内でも Grok payload で発火する — こちらも封筒が違うので no-op(テストでピン済み)
 - `cursor-agent`(CLI)は同じ hooks ファイルを読むが発火イベントはサブセット。kbd-signal の cursor 経路は IDE でのみ実機検証済み
 

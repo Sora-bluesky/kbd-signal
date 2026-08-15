@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "hooks": {
+    "stop": [
+      {
+        "command": "kbd-signal hook cursor",
+        "timeout": 5
+      }
+    ]
+  }
+}

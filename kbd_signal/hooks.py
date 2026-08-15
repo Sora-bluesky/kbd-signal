@@ -1,4 +1,4 @@
-"""Dispatch Claude Code, Codex, and Grok lifecycle events to lighting states.
+"""Dispatch Claude Code, Codex, Grok, and Cursor events to lighting states.
 
 Design rule: hook entry points must NEVER block or fail the agent.
 Every path exits 0, errors only go to the log file.
@@ -283,5 +283,98 @@ def handle_grok(stdin=None):
         # must be contained without writing a response to stdout.
         try:
             states.log(f"hook grok: error ({type(e).__name__})")
+        except Exception:
+            pass
+
+
+# Cursor is completion-notify only: its hooks API has no approval-wait event.
+# A completed top-level turn is therefore the only DONE_SESSION operation.
+# Every other recognized event is a logged no-op because nothing exists to
+# release; revisit this if Cursor ships an approval event.
+_CURSOR_LOGGABLE_EVENTS = frozenset({
+    "sessionStart",
+    "sessionEnd",
+    "beforeSubmitPrompt",
+    "preToolUse",
+    "postToolUse",
+    "postToolUseFailure",
+    "beforeShellExecution",
+    "afterShellExecution",
+    "beforeMCPExecution",
+    "afterMCPExecution",
+    "beforeReadFile",
+    "afterFileEdit",
+    "stop",
+    "subagentStart",
+    "subagentStop",
+    "preCompact",
+    "afterAgentResponse",
+    "afterAgentThought",
+    "workspaceOpen",
+})
+
+_CURSOR_LOGGABLE_STATUSES = frozenset({
+    "completed",
+    "aborted",
+    "error",
+})
+
+
+def _cursor_event(payload):
+    event = payload.get("hook_event_name")
+    if not isinstance(event, str):
+        return None
+
+    if event == "stop":
+        subagent_id = payload.get("subagent_id")
+        if isinstance(subagent_id, str) and subagent_id:
+            return None
+
+        status = payload.get("status")
+        if status == "completed":
+            return "Stop"
+
+    return None
+
+
+def handle_cursor(stdin=None):
+    """Handle Cursor hook JSON received on stdin."""
+    try:
+        payload = _read_stdin(stdin, "cursor")
+        if payload is None:
+            return
+
+        event = _cursor_event(payload)
+        if event is None:
+            raw_event = payload.get("hook_event_name")
+            safe_event = _grok_safe_name(
+                raw_event,
+                _CURSOR_LOGGABLE_EVENTS,
+            )
+            detail = ""
+            if raw_event == "stop":
+                safe_status = _grok_safe_name(
+                    payload.get("status"),
+                    _CURSOR_LOGGABLE_STATUSES,
+                )
+                detail = f" status={safe_status}"
+            states.log(
+                f"hook cursor: event={safe_event}{detail} ignored"
+            )
+            return
+
+        session = payload.get("session_id")
+        if not isinstance(session, str) or not session:
+            session = payload.get("conversation_id")
+        normalized = {
+            "hook_event_name": "Stop",
+            "session_id": session,
+        }
+        _handle_lifecycle("cursor", normalized)
+    except Exception as e:
+        # Cursor consumes hook stdout as control JSON. Unexpected failures must
+        # be contained without emitting a followup_message or any other output.
+        try:
+            states.log(f"hook cursor: error ({type(e).__name__})")
         except Exception:
             pass

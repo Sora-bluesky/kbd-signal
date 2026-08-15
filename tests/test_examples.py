@@ -215,8 +215,7 @@ class GrokExampleConfigTests(unittest.TestCase):
                     )
                 else:
                     self.assertNotIn(
-                        "matcher",
-                        group,
+                        "matcher", group,
                         f"{event} must omit matcher",
                     )
 
@@ -270,6 +269,43 @@ class GrokExampleConfigTests(unittest.TestCase):
                     canonical,
                     f"{event} is registered but dispatches unexpectedly",
                 )
+
+
+class CursorExampleConfigTests(unittest.TestCase):
+    @staticmethod
+    def _repo_path(*parts):
+        return os.path.join(
+            os.path.dirname(os.path.dirname(__file__)),
+            *parts,
+        )
+
+    def _load_example(self):
+        path = self._repo_path("examples", "cursor-hooks.json")
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+
+    def test_cursor_hooks_example_is_minimal_and_valid(self):
+        config = self._load_example()
+
+        self.assertEqual(config["version"], 1)
+        self.assertEqual(set(config["hooks"]), {"stop"})
+        self.assertEqual(len(config["hooks"]["stop"]), 1)
+
+        handler = config["hooks"]["stop"][0]
+        self.assertEqual(handler["command"], "kbd-signal hook cursor")
+        self.assertEqual(handler["timeout"], 5)
+        self.assertNotIn("type", handler)
+        self.assertNotIn("matcher", handler)
+
+    def test_cursor_completed_stop_dispatches_to_canonical_stop(self):
+        from kbd_signal import hooks
+
+        payload = {
+            "hook_event_name": "stop",
+            "status": "completed",
+            "session_id": "representative-session",
+        }
+        self.assertEqual(hooks._cursor_event(payload), "Stop")
 
 
 if __name__ == "__main__":

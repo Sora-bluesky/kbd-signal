@@ -736,5 +736,306 @@ class GrokHookDispatchTests(unittest.TestCase):
         self.mocks["release_waiting"].assert_not_called()
 
 
+class CursorHookDispatchTests(unittest.TestCase):
+    def setUp(self):
+        patcher = mock.patch.multiple(
+            hooks.states,
+            set_state=mock.DEFAULT,
+            release_waiting=mock.DEFAULT,
+            log=mock.DEFAULT,
+        )
+        self.mocks = patcher.start()
+        self.addCleanup(patcher.stop)
+
+    @staticmethod
+    def _stdin(payload):
+        return io.StringIO(json.dumps(payload))
+
+    def _reset_mocks(self):
+        for mocked in self.mocks.values():
+            mocked.reset_mock()
+
+    def test_completed_stop_signals_done(self):
+        hooks.handle_cursor(self._stdin({
+            "hook_event_name": "stop",
+            "status": "completed",
+            "session_id": "s1",
+        }))
+
+        self.mocks["set_state"].assert_called_once_with(
+            "done",
+            session="cursor:s1:main",
+            owner_prefix="cursor:s1:",
+            owner_aliases=("s1",),
+        )
+        self.mocks["release_waiting"].assert_not_called()
+
+    def test_non_completed_stop_statuses_are_noops(self):
+        cases = (
+            ("aborted", True),
+            ("error", True),
+            (None, False),
+            (7, True),
+            ({"value": "completed"}, True),
+        )
+        for status, include_status in cases:
+            with self.subTest(status=status, include_status=include_status):
+                self._reset_mocks()
+                payload = {
+                    "hook_event_name": "stop",
+                    "session_id": "s1",
+                }
+                if include_status:
+                    payload["status"] = status
+
+                hooks.handle_cursor(self._stdin(payload))
+
+                self.mocks["set_state"].assert_not_called()
+                self.mocks["release_waiting"].assert_not_called()
+
+    def test_completed_subagent_stop_is_noop(self):
+        hooks.handle_cursor(self._stdin({
+            "hook_event_name": "stop",
+            "status": "completed",
+            "session_id": "s1",
+            "subagent_id": "child-1",
+        }))
+
+        self.mocks["set_state"].assert_not_called()
+        self.mocks["release_waiting"].assert_not_called()
+
+    def test_conversation_id_is_fallback_identity(self):
+        hooks.handle_cursor(self._stdin({
+            "hook_event_name": "stop",
+            "status": "completed",
+            "conversation_id": "conversation-1",
+        }))
+
+        self.mocks["set_state"].assert_called_once_with(
+            "done",
+            session="cursor:conversation-1:main",
+            owner_prefix="cursor:conversation-1:",
+            owner_aliases=("conversation-1",),
+        )
+
+    def test_empty_session_id_uses_conversation_id_fallback(self):
+        hooks.handle_cursor(self._stdin({
+            "hook_event_name": "stop",
+            "status": "completed",
+            "session_id": "",
+            "conversation_id": "conversation-1",
+        }))
+
+        self.mocks["set_state"].assert_called_once_with(
+            "done",
+            session="cursor:conversation-1:main",
+            owner_prefix="cursor:conversation-1:",
+            owner_aliases=("conversation-1",),
+        )
+
+    def test_missing_cursor_identity_is_noop(self):
+        hooks.handle_cursor(self._stdin({
+            "hook_event_name": "stop",
+            "status": "completed",
+        }))
+
+        self.mocks["set_state"].assert_not_called()
+        self.mocks["release_waiting"].assert_not_called()
+
+    def test_non_completion_cursor_events_are_noops(self):
+        events = (
+            "sessionStart",
+            "sessionEnd",
+            "beforeSubmitPrompt",
+            "beforeShellExecution",
+            "postToolUse",
+            "subagentStop",
+            "unknown_junk",
+            17,
+        )
+        for event in events:
+            with self.subTest(event=event):
+                self._reset_mocks()
+
+                hooks.handle_cursor(self._stdin({
+                    "hook_event_name": event,
+                    "session_id": "s1",
+                }))
+
+                self.mocks["set_state"].assert_not_called()
+                self.mocks["release_waiting"].assert_not_called()
+
+    def test_cursor_payload_is_noop_for_other_handlers(self):
+        payload = {
+            "hook_event_name": "stop",
+            "status": "completed",
+            "session_id": "s1",
+            "conversation_id": "s1",
+        }
+        handlers = (
+            ("claude", lambda: hooks.handle_claude(self._stdin(payload))),
+            (
+                "codex",
+                lambda: hooks.handle_codex([], self._stdin(payload)),
+            ),
+            ("grok", lambda: hooks.handle_grok(self._stdin(payload))),
+        )
+        for source, dispatch in handlers:
+            with self.subTest(source=source):
+                self._reset_mocks()
+
+                dispatch()
+
+                self.mocks["set_state"].assert_not_called()
+                self.mocks["release_waiting"].assert_not_called()
+
+    def test_grok_payload_is_noop_for_cursor(self):
+        hooks.handle_cursor(self._stdin({
+            "hookEventName": "stop",
+            "reason": "end_turn",
+            "sessionId": "s1",
+        }))
+
+        self.mocks["set_state"].assert_not_called()
+        self.mocks["release_waiting"].assert_not_called()
+
+    def test_claude_payloads_are_noops_for_cursor(self):
+        for event in ("Stop", "PermissionRequest"):
+            with self.subTest(event=event):
+                self._reset_mocks()
+
+                hooks.handle_cursor(self._stdin({
+                    "hook_event_name": event,
+                    "session_id": "s1",
+                }))
+
+                self.mocks["set_state"].assert_not_called()
+                self.mocks["release_waiting"].assert_not_called()
+
+    def test_all_four_sources_use_distinct_owner_namespaces(self):
+        canonical = {
+            "hook_event_name": "Stop",
+            "session_id": "same-session-id",
+        }
+        grok = {
+            "hookEventName": "stop",
+            "reason": "end_turn",
+            "sessionId": "same-session-id",
+        }
+        cursor = {
+            "hook_event_name": "stop",
+            "status": "completed",
+            "session_id": "same-session-id",
+        }
+
+        hooks.handle_claude(self._stdin(canonical))
+        hooks.handle_codex([], self._stdin(canonical))
+        hooks.handle_grok(self._stdin(grok))
+        hooks.handle_cursor(self._stdin(cursor))
+
+        calls = self.mocks["set_state"].call_args_list
+        self.assertEqual(
+            [call.kwargs["session"] for call in calls],
+            [
+                "claude:same-session-id:main",
+                "codex:same-session-id:main",
+                "grok:same-session-id:main",
+                "cursor:same-session-id:main",
+            ],
+        )
+
+    def test_cursor_and_compat_handlers_write_nothing_to_stdout(self):
+        import contextlib
+
+        fixtures = (
+            {
+                "hook_event_name": "stop",
+                "status": "completed",
+                "session_id": "s1",
+                "conversation_id": "s1",
+            },
+            {
+                "hook_event_name": "stop",
+                "status": "aborted",
+                "session_id": "s1",
+            },
+            {
+                "hook_event_name": "sessionStart",
+                "session_id": "s1",
+            },
+            {
+                "hook_event_name": "stop",
+                "status": "completed",
+                "session_id": "s1",
+                "subagent_id": "child-1",
+            },
+        )
+        measured = {
+            "hook_event_name": "stop",
+            "status": "completed",
+            "session_id": "s1",
+            "conversation_id": "s1",
+        }
+        captured = io.StringIO()
+        with contextlib.redirect_stdout(captured):
+            for payload in fixtures:
+                hooks.handle_cursor(self._stdin(payload))
+            hooks.handle_claude(self._stdin(measured))
+
+        self.assertEqual(captured.getvalue(), "")
+
+    def test_hostile_cursor_names_are_not_echoed_to_log(self):
+        hostile_event = "x\ninjected"
+        hostile_status = "status\ninjected"
+
+        hooks.handle_cursor(self._stdin({
+            "hook_event_name": hostile_event,
+            "session_id": "s1",
+        }))
+        hooks.handle_cursor(self._stdin({
+            "hook_event_name": "stop",
+            "status": hostile_status,
+            "session_id": "s1",
+        }))
+
+        messages = "\n".join(
+            call.args[0] for call in self.mocks["log"].call_args_list
+        )
+        self.assertIn("hook cursor: event=? ignored", messages)
+        self.assertIn("hook cursor: event=stop status=? ignored", messages)
+        self.assertNotIn(hostile_event, messages)
+        self.assertNotIn(hostile_status, messages)
+
+    def test_logs_owner_hash_without_raw_session_id(self):
+        raw_session = "private-cursor-session"
+        hooks.handle_cursor(self._stdin({
+            "hook_event_name": "stop",
+            "status": "completed",
+            "session_id": raw_session,
+        }))
+
+        messages = "\n".join(
+            call.args[0] for call in self.mocks["log"].call_args_list
+        )
+        tag = hooks._owner_tag(f"cursor:{raw_session}:main")
+        self.assertIn(f"owner={tag}", messages)
+        self.assertNotIn(raw_session, messages)
+
+    def test_duplicate_completed_stop_has_identical_dispatch(self):
+        payload = {
+            "hook_event_name": "stop",
+            "status": "completed",
+            "session_id": "s1",
+        }
+
+        hooks.handle_cursor(self._stdin(payload))
+        hooks.handle_cursor(self._stdin(payload))
+
+        calls = self.mocks["set_state"].call_args_list
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[0], calls[1])
+        self.mocks["release_waiting"].assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -283,7 +283,7 @@ Cursor の hooks API(beta、Cursor 3.16.17 で実測)には**「エージェン�
 
 ### オレンジが消えない
 
-別セッションやサブエージェントの承認待ちが残っているか、Codex を承認待ちのまま強制終了した(Codex に `SessionEnd` が無い)。`kbd-signal restore` を実行する。1時間の TTL でも外れる。[Codex](#codexv030) を参照。
+別セッションやサブエージェントの承認待ちが残っているか、Codex を承認待ちのまま強制終了した(Codex に `SessionEnd` が無い)。`kbd-signal restore` を実行する。放置しても1時間ほどで期限切れになり自動で外れる。[Codex](#codexv030) を参照。
 
 ### restore のたびに演出色が戻る / baseline なのに消灯したまま
 

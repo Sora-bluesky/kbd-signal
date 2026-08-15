@@ -310,7 +310,7 @@ No. Nothing is written to EEPROM. A power cycle always brings back the settings 
 
 ### The orange waiting light will not go away.
 
-Another session or subagent still has an approval pending, or Codex was force-closed during a wait (Codex has no `SessionEnd`). Run `kbd-signal restore`. Stale waits also clear after one hour. See [Codex integration](#codex-integration-since-v030).
+Another session or subagent still has an approval pending, or Codex was force-closed during a wait (Codex has no `SessionEnd`). Run `kbd-signal restore`. Stale waits also expire on their own after an hour or so. See [Codex integration](#codex-integration-since-v030).
 
 ### Restore keeps bringing back a signal color, or the board stays dark in baseline mode.
 

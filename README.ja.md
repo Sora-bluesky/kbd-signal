@@ -181,7 +181,7 @@ Grok Build(xAI の `grok` CLI)は Claude Code 互換のライフサイクルフ�
 
 #### Claude Code との違い
 
-- `PermissionRequest` イベントが存在しない。承認待ちは `Notification` の type `permission_prompt` で届く(matcher を持つのはこのエントリだけ)。現時点で点灯するのはツール承認のプロンプトだけで、plan のレビュー待ちなど他の注意待ちは別の notification type を持ち、まだ通知対象にしていない
+- `PermissionRequest` イベントが存在しない。承認待ちは `Notification` の type `permission_prompt` で届く(matcher を持つのはこのエントリだけ)。plan のレビュー待ちも同じ `permission_prompt` で発火する(1.0.3 実測)ため、plan 承認画面で止まっている間もツール承認と同じようにオレンジが点く
 - **matcher は正規表現**。Claude の `"*"` はここでは不正な正規表現になる。全部にマッチさせたいときは matcher を省略する
 - payload は camelCase(`hookEventName` / `sessionId`)、イベント値は小文字スネーク(`"stop"`)。`kbd-signal hook grok` が内部語彙へ変換し、Grok セッションは独自の `grok:` owner を持つ
 - `Stop` は2回発火する。ターン完了時(`reason: "end_turn"`)と、セッション終了時の観測専用の1回(実測: `reason: "shutdown"`)。グリーンが出るのは `end_turn` のときだけで、終了時の分は古い承認待ちの掃除に使う
@@ -266,6 +266,40 @@ Cursor の hooks API(beta、Cursor 3.16.17 で実測)には**「エージェン�
 実機で確認済みのプリセット。各ページに VID/PID・プロトコル・エフェクト番号・注意点を記載。リンク先 config の `device` ブロックを `config.json` にコピーして使う。
 
 - **Keychron Q1 HE 8K** — [詳細](docs/devices/keychron-q1-he-8k.ja.md) · [`config.q1-he-8k.json`](examples/config.q1-he-8k.json)
+
+## よくある質問
+
+### フックを入れてもキーボードが動かない
+
+`hook` / `set` / `restore` はキーボード未検出時に exit 0 で no-op する(フックをブロックしない)。背面スイッチが Cable か、VIA アプリ / Keychron Launcher が同時に動いていないか、Windows ならフックのプログラム位置にパスを書いていないかを確認する。[制約](#制約)と [Claude Code](#claude-code-user-scope-settingsjson) のプログラム位置の注意を参照。
+
+### Bluetooth では動くか
+
+動かない。K8 Pro では BT モードだとケーブルを挿していても raw HID(`0xFF60`)が出ない(実測)。USB で背面スイッチを Cable にする。
+
+### キーボードに保存したライティングは上書きされるか
+
+されない。EEPROM には書かない。電源を入れ直せばキーボード側の設定に戻る。
+
+### オレンジが消えない
+
+別セッションやサブエージェントの承認待ちが残っているか、Codex を承認待ちのまま強制終了した(Codex に `SessionEnd` が無い)。`kbd-signal restore` を実行する。放置しても1時間ほどで期限切れになり自動で外れる。[Codex](#codexv030) を参照。
+
+### restore のたびに演出色が戻る / baseline なのに消灯したまま
+
+[トラブルシューティング](#トラブルシューティング)を参照。
+
+### 色や演出は変えられるか
+
+変えられる。`config.json` の `states` で変えたいフィールドだけ上書きする。`effect` は生の番号ではなく `device.effects` のキー名。[各状態の見え方](#各状態の見え方configjson-の-states)を参照。
+
+### 別のキーボードで使えるか
+
+VIA 対応の RGB なら `kbd-signal setup` のあと `kbd-signal test`。プリセット化は `kbd-signal export`。単色バックライトは対象外。実機ページは[対応確認済みデバイス](#対応確認済みデバイス)。
+
+### Cursor でオレンジが出ない / Linux と macOS の K8 Pro
+
+Cursor の hooks API に承認待ちイベントが無いので、完了したターンで緑が出るだけ(3.16.17 で実測)。Linux は CI のみで実機検証はない。既定機種の K8 Pro は macOS でのラウンドトリップが未検証。[Cursor](#cursorv130完了通知のみ)と[プラットフォーム対応](#プラットフォーム対応)を参照。
 
 ## License
 

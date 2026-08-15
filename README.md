@@ -189,7 +189,7 @@ Every event uses the same command:
 
 ### How Grok differs from Claude Code
 
-- No `PermissionRequest` event exists. An approval wait arrives as `Notification` with type `permission_prompt` — that entry is the only one with a matcher. Only tool-permission prompts light up today; other attention waits (a plan waiting for review, for example) have their own notification types and are not signaled yet
+- No `PermissionRequest` event exists. An approval wait arrives as `Notification` with type `permission_prompt` — that entry is the only one with a matcher. Plan-approval waits use the same `permission_prompt` type (measured on 1.0.3), so a plan sitting on its review screen breathes orange just like a tool approval
 - **Matchers are regular expressions.** Claude's `"*"` is an invalid regex here; an omitted matcher is what matches everything
 - The payload is camelCase (`hookEventName`, `sessionId`) with lowercase-snake event values (`"stop"`). `kbd-signal hook grok` translates to the internal vocabulary, and Grok sessions get their own `grok:` owners
 - `Stop` fires twice: on turn completion (`reason: "end_turn"`) and again, observe-only, when the session closes (measured: `reason: "shutdown"`). Green shows only for `end_turn`; the close fire just releases stale approvals
@@ -293,6 +293,40 @@ Boards without RGB (single-color backlight) are out of scope — states are colo
 Presets confirmed on real hardware. Each page lists the board's VID/PID, protocol, effect indices, and quirks; copy the linked config's `device` block into your `config.json`.
 
 - **Keychron Q1 HE 8K** — [notes](docs/devices/keychron-q1-he-8k.md) · [`config.q1-he-8k.json`](examples/config.q1-he-8k.json)
+
+## FAQ
+
+### Why does nothing happen after I install the hooks?
+
+`hook`, `set`, and `restore` exit 0 when the keyboard is missing, so a hook never blocks the agent. Check the rear switch is set to Cable, quit the VIA app / Keychron Launcher, and on Windows do not put a filesystem path in the hook's program position. See [Requirements & limitations](#requirements--limitations) and the path note under [Claude Code integration](#claude-code-integration).
+
+### Does it work over Bluetooth?
+
+No. Raw HID (`0xFF60`) does not appear in BT mode, even with the cable plugged in (measured on the K8 Pro). Use USB with the rear switch on Cable.
+
+### Will this overwrite the lighting I saved on the board?
+
+No. Nothing is written to EEPROM. A power cycle always brings back the settings stored on the keyboard.
+
+### The orange waiting light will not go away.
+
+Another session or subagent still has an approval pending, or Codex was force-closed during a wait (Codex has no `SessionEnd`). Run `kbd-signal restore`. Stale waits also expire on their own after an hour or so. See [Codex integration](#codex-integration-since-v030).
+
+### Restore keeps bringing back a signal color, or the board stays dark in baseline mode.
+
+See [Troubleshooting](#troubleshooting).
+
+### Can I change the colors or use a static effect?
+
+Yes. Override the fields you want under `states` in `config.json`. `effect` names a key of `device.effects`, not a raw index. See [What each signal looks like](#what-each-signal-looks-like-states-in-configjson).
+
+### Will it work on my keyboard?
+
+On a VIA-compatible RGB board, run `kbd-signal setup` then `kbd-signal test`. `kbd-signal export` prints a preset skeleton for a pull request. Single-color backlights are out of scope. Verified device pages are listed under [Verified devices](#verified-devices).
+
+### Why is there no orange in Cursor? What about Linux, or a K8 Pro on macOS?
+
+Cursor's hooks API has no approval-wait event, so only a finished turn goes green (verified on 3.16.17). Linux is CI-only, with no hardware verification. The default K8 Pro has not been round-tripped on macOS. See [Cursor integration](#cursor-integration-since-v130--completion-notify-only) and [Platform support](#platform-support).
 
 ## License
 

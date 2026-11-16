@@ -63,11 +63,11 @@ hue は QMK のホイールで赤 0 / オレンジ 21 / 緑 85。`hue` / `sat` /
 |----|-----------|---------|
 | Windows | ✅ 対応 | Keychron K8 Pro(デフォルト)・実機 |
 | macOS | ✅ 対応 | Keychron Q1 HE 8K・実機¹ |
-| Linux | 🧪 ベストエフォート | Keychron Q1 HE 8K・実機² |
+| Linux | ✅ 対応 | Keychron Q1 HE 8K・実機² |
 
 ¹ macOS の raw HID(`0xFF60` の列挙 / open / プロトコル判別 + Claude Code hook `waiting → done → restore`)は **Q1 HE 8K** で実機検証済み。**デフォルト機種の K8 Pro は macOS での set/restore ラウンドトリップが未検証** — プロトコル層は(検証済みの)Windows と共通なので動作する見込みだが未確認(動作報告歓迎)。
 
-² Linux は **Q1 HE 8K**(Arch Linux・PyPI の `hidapi` wheel そのまま)で実機検証済み: `0xFF60` の列挙 / open / プロトコル判別、`kbd-signal test`、Claude Code hook `waiting → done → restore`。それ以外は macOS と同じ POSIX 経路で動作し CI でも検証している。PyPI classifier は Windows / macOS のみを記載する。
+² Linux は **Q1 HE 8K**(Arch Linux・PyPI の `hidapi` wheel そのまま)で実機検証済み: `0xFF60` の列挙 / open / プロトコル判別、`kbd-signal test`、Claude Code hook `waiting → done → restore`。それ以外は macOS と同じ POSIX 経路で動作し CI でも検証している。Windows / macOS と違い、`/dev/hidraw*` へのアクセスに udev ルールが必要([インストール](#インストール)を参照)。
 
 ## インストール
 
@@ -308,7 +308,7 @@ VIA 対応の RGB なら `kbd-signal setup` のあと `kbd-signal test`。プリ
 
 ### Cursor でオレンジが出ない / Linux と macOS の K8 Pro
 
-Cursor の hooks API に承認待ちイベントが無いので、完了したターンで緑が出るだけ(3.16.17 で実測)。Linux はベストエフォートで、Q1 HE 8K で実機検証済み。`/dev/hidraw*` へのアクセスに udev ルールが必要([インストール](#インストール)を参照)。既定機種の K8 Pro は macOS でのラウンドトリップが未検証。[Cursor](#cursorv130完了通知のみ)と[プラットフォーム対応](#プラットフォーム対応)を参照。
+Cursor の hooks API に承認待ちイベントが無いので、完了したターンで緑が出るだけ(3.16.17 で実測)。Linux は対応済みで、Q1 HE 8K で実機検証済み。`/dev/hidraw*` へのアクセスに udev ルールが必要([インストール](#インストール)を参照)。既定機種の K8 Pro は macOS でのラウンドトリップが未検証。[Cursor](#cursorv130完了通知のみ)と[プラットフォーム対応](#プラットフォーム対応)を参照。
 
 ## License
 

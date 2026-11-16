@@ -33,11 +33,11 @@ Before signaling, the current lighting (effect / speed / brightness / color) is 
 |----|--------|-----------------------|
 | Windows | ✅ Supported | Keychron K8 Pro (default), real hardware |
 | macOS | ✅ Supported | Keychron Q1 HE 8K, real hardware¹ |
-| Linux | 🧪 Best-effort | Keychron Q1 HE 8K, real hardware² |
+| Linux | ✅ Supported | Keychron Q1 HE 8K, real hardware² |
 
 ¹ The macOS raw-HID path (`0xFF60` enumerate / open / protocol-probe, plus a Claude Code hook `waiting → done → restore`) is verified on a **Q1 HE 8K**. The **default K8 Pro has not been round-tripped on macOS** — the protocol layer is shared with the (verified) Windows path so it should work, but it is unconfirmed; a report either way is welcome.
 
-² Verified on a **Q1 HE 8K** on Arch Linux with the stock PyPI `hidapi` wheel: `0xFF60` enumerate / open / protocol-probe, `kbd-signal test`, and a Claude Code hook `waiting → done → restore`. Linux otherwise runs the same POSIX code path as macOS and is exercised in CI. The PyPI classifiers list Windows and macOS only.
+² Verified on a **Q1 HE 8K** on Arch Linux with the stock PyPI `hidapi` wheel: `0xFF60` enumerate / open / protocol-probe, `kbd-signal test`, and a Claude Code hook `waiting → done → restore`. Linux otherwise runs the same POSIX code path as macOS and is exercised in CI. Unlike Windows and macOS, it needs a udev rule for `/dev/hidraw*` access (see [Install](#install)).
 
 ## Install
 
@@ -335,7 +335,7 @@ On a VIA-compatible RGB board, run `kbd-signal setup` then `kbd-signal test`. `k
 
 ### Why is there no orange in Cursor? What about Linux, or a K8 Pro on macOS?
 
-Cursor's hooks API has no approval-wait event, so only a finished turn goes green (verified on 3.16.17). Linux is best-effort, verified on a Q1 HE 8K; it needs a udev rule for `/dev/hidraw*` access (see [Install](#install)). The default K8 Pro has not been round-tripped on macOS. See [Cursor integration](#cursor-integration-since-v130--completion-notify-only) and [Platform support](#platform-support).
+Cursor's hooks API has no approval-wait event, so only a finished turn goes green (verified on 3.16.17). Linux is supported and verified on a Q1 HE 8K; it needs a udev rule for `/dev/hidraw*` access (see [Install](#install)). The default K8 Pro has not been round-tripped on macOS. See [Cursor integration](#cursor-integration-since-v130--completion-notify-only) and [Platform support](#platform-support).
 
 ## License
 

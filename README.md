@@ -61,11 +61,13 @@ Plain pip also works (`py -m pip install .`); in that case invoke the hooks with
 **Linux** — `pipx install kbd-signal`. kbd-signal talks through the wheel's `hidraw` module (the kernel hidraw backend), so no libusb setup is needed. `/dev/hidraw*` is root-only by default, so give your login session access to the keyboard's raw-HID interface with a udev rule, e.g. `/etc/udev/rules.d/71-kbd-signal.rules` (Q1 HE 8K shown):
 
 ```
-# VIA raw HID interface only; the typing interface stays root-only
+# VIA raw HID interface only; the typing interface stays root-only.
+# systemd < 258 does not run usb_id for hidraw, so import it here.
+SUBSYSTEM=="hidraw", SUBSYSTEMS=="usb", ENV{ID_BUS}=="", IMPORT{builtin}="usb_id"
 SUBSYSTEM=="hidraw", ENV{ID_VENDOR_ID}=="3434", ENV{ID_MODEL_ID}=="1012", ENV{ID_USB_INTERFACE_NUM}=="01", TAG+="uaccess"
 ```
 
-Take the three values for your board from `udevadm info -q property -n /dev/hidrawN` on the node whose interface is the raw-HID one, copied exactly as printed: udev compares them as strings, so a PID written `0B12` (the casing used in this project's config) never matches udev's `0b12`; then apply with `sudo udevadm control --reload-rules && sudo udevadm trigger --action=change --subsystem-match=hidraw`. Match on these `ENV` keys rather than `ATTRS{idVendor}` plus `ATTRS{bInterfaceNumber}`: udev requires every `ATTRS` key in a rule to match the same parent device, and those two live on different ones, so such a rule silently never matches. Keep the file name sorting before `73-seat-late.rules`, where `uaccess` is applied. Config, state, and log live in `$XDG_STATE_HOME/kbd-signal/` (default `~/.local/state/kbd-signal/`).
+Take the three values for your board from `udevadm info -a -n /dev/hidrawN` on the node whose interface is the raw-HID one (`ATTRS{idVendor}`, `ATTRS{idProduct}` and `ATTRS{bInterfaceNumber}`; this works on any systemd version), copied exactly as printed: udev compares them as strings, so a PID written `0B12` (the casing used in this project's config) never matches udev's `0b12`; then apply with `sudo udevadm control --reload-rules && sudo udevadm trigger --action=change --subsystem-match=hidraw`. Match on these `ENV` keys rather than `ATTRS{idVendor}` plus `ATTRS{bInterfaceNumber}`: udev requires every `ATTRS` key in a rule to match the same parent device, and those two live on different ones, so such a rule silently never matches. Keep the `usb_id` import line too: systemd added the rule that sets these keys on hidraw devices (`60-persistent-hidraw.rules`) only in v258, so without it the rule silently does nothing on older systems such as Ubuntu 24.04 LTS (systemd 255). Keep the file name sorting before `73-seat-late.rules`, where `uaccess` is applied. Config, state, and log live in `$XDG_STATE_HOME/kbd-signal/` (default `~/.local/state/kbd-signal/`).
 
 ## Usage
 

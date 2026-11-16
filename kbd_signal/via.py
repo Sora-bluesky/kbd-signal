@@ -13,9 +13,9 @@ persisted settings and the EEPROM is never worn.
 
 import time
 
-from . import config
+from . import _platform, config
 
-# `import hid` is deferred into the functions below: importing this module
+# The hidapi import is deferred (_platform.hid_module()): importing this module
 # must stay cheap for the hot no-op hook path (no hidapi DLL load).
 
 USAGE_PAGE = 0xFF60  # QMK raw HID
@@ -48,11 +48,12 @@ class DeviceNotFound(Exception):
     pass
 
 
+
 def enumerate_raw_hid(vendor_id=None):
     """All raw-HID (0xFF60) interfaces, optionally filtered by VID.
     `kbd-signal detect --all` uses vendor_id=None to help users of other
     keyboards find their VID/PID."""
-    import hid
+    hid = _platform.hid_module()
     return [
         d for d in hid.enumerate(vendor_id or 0)
         if d.get("usage_page") == USAGE_PAGE and d.get("usage") == USAGE
@@ -74,7 +75,8 @@ def find_device(dev_cfg=None):
     if not candidates:
         raise DeviceNotFound(
             f"raw HID interface not found for VID "
-            f"{dev_cfg['vendor_id']:#06x} (wired USB required)")
+            f"{dev_cfg['vendor_id']:#06x} (wired USB required)"
+            f"{_platform.hid_backend_hint(_platform.hid_module())}")
     # Prefer the configured product substring if several boards are attached
     match = dev_cfg.get("product_match")
     if match:
@@ -170,7 +172,7 @@ def probe_reset_on_effect(kb, effect, window=0.3, settle=0.02):
 
 class Keyboard:
     def __init__(self, dev_cfg=None):
-        import hid
+        hid = _platform.hid_module()
         self._cfg = config.device() if dev_cfg is None else dev_cfg
         self._channel = self._cfg["v3_channel"]
         self._dev = hid.device()

@@ -40,6 +40,11 @@ jobs:
         run: python -m pip install . pytest
       - name: Run tests
         run: python -m pytest tests/ -q
+      - name: Smoke - the wheel's hidraw backend loads (Linux)
+        # Linux talks through `hidraw` (see _platform.hid_module); every test
+        # stubs it, so catch the wheel dropping or breaking that module here.
+        if: runner.os == 'Linux'
+        run: python -c "import hidraw; hidraw.enumerate(0)"
       - name: Smoke - console script exists
         run: kbd-signal --help
       - name: Smoke - hook path is a safe no-op without a keyboard

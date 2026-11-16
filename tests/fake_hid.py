@@ -188,8 +188,22 @@ def attached(device, entry=None):
     then need no hidapi runtime at all, which keeps them honest on CI runners
     with no HID stack.
     """
-    stub = types.ModuleType("hid")
+    # The stub takes the name this host's backend selection resolves to
+    # (_platform.hid_module: `hidraw` on Linux, `hid` elsewhere). The other
+    # name is poisoned, so a code path that bypasses the selection fails here
+    # instead of passing against the same fake -- or reaching real hardware on
+    # a runner that has the wheel installed.
+    selected = "hidraw" if sys.platform.startswith("linux") else "hid"
+    other = "hid" if selected == "hidraw" else "hidraw"
+    stub = types.ModuleType(selected)
     stub.device = lambda: device
     stub.enumerate = lambda vendor_id=0: [entry or DEFAULT_ENTRY]
-    with mock.patch.dict(sys.modules, {"hid": stub}):
+
+    def _wrong_backend(*args, **kwargs):
+        raise AssertionError(f"`{other}` used; the selected backend is "
+                             f"`{selected}`")
+
+    poison = types.ModuleType(other)
+    poison.device = poison.enumerate = _wrong_backend
+    with mock.patch.dict(sys.modules, {selected: stub, other: poison}):
         yield device

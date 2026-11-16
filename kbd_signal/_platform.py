@@ -1,12 +1,12 @@
 """Platform primitives — the single place OS branching lives.
 
 Only the OS-specific *mechanisms* belong here (how to grab/release an
-advisory lock, how to detach a child process, where the user data dir is).
-The *policy* around them — the bounded lock retry + timeout in
-kbd_signal.states, what to spawn, how config is merged — stays OS-common in
-its own module and calls the stable interface below. Keeping the shared
-policy single-sourced is what protects the already-working Windows path
-from POSIX changes.
+advisory lock, how to detach a child process, where the user data dir is,
+which hidapi backend to load). The *policy* around them — the bounded lock
+retry + timeout in kbd_signal.states, what to spawn, how config is merged —
+stays OS-common in its own module and calls the stable interface below.
+Keeping the shared policy single-sourced is what protects the
+already-working Windows path from POSIX changes.
 """
 
 import os
@@ -73,3 +73,39 @@ def state_dir():
         base = (xdg if xdg and os.path.isabs(xdg)
                 else os.path.join(os.path.expanduser("~"), ".local", "state"))
     return os.path.join(base, "kbd-signal")
+
+
+def hid_module():
+    """The hidapi module to talk through.
+
+    On Linux the PyPI `hidapi` wheel builds `hid` on the libusb backend. That
+    backend learns an interface's usage page by opening the USB device node,
+    which is root-only by default, so for an ordinary user every interface
+    enumerates with usage_page 0 and the 0xFF60 filter never matches; opening
+    a device through it would also detach the kernel's usbhid driver from that
+    interface. The same wheel ships a `hidraw` module with the identical API on
+    the kernel hidraw backend, which reads usage pages from sysfs and opens
+    /dev/hidraw* directly. Prefer it on Linux, and fall back to `hid` when it
+    is absent (e.g. a hidapi built with `hid` itself on hidraw).
+
+    Imported lazily so the hot no-op hook path never loads the native library.
+    """
+    if sys.platform.startswith("linux"):
+        try:
+            import hidraw
+            return hidraw
+        except ImportError:
+            pass
+    import hid
+    return hid
+
+
+def hid_backend_hint(module):
+    """Text to append to a device-not-found error when the backend itself may
+    be the cause: on Linux without the `hidraw` module, a libusb `hid` cannot
+    see raw-HID interfaces as an ordinary user. Empty everywhere else."""
+    if sys.platform.startswith("linux") and module.__name__ != "hidraw":
+        return ("; hidapi's `hidraw` module is not installed, and if its `hid` "
+                "module is the libusb build it cannot see raw-HID interfaces "
+                "without root")
+    return ""

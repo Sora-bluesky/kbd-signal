@@ -33,11 +33,11 @@ Before signaling, the current lighting (effect / speed / brightness / color) is 
 |----|--------|-----------------------|
 | Windows | ✅ Supported | Keychron K8 Pro (default), real hardware |
 | macOS | ✅ Supported | Keychron Q1 HE 8K, real hardware¹ |
-| Linux | 🧪 Best-effort | CI only — no hardware verification |
+| Linux | 🧪 Best-effort | Keychron Q1 HE 8K, real hardware² |
 
 ¹ The macOS raw-HID path (`0xFF60` enumerate / open / protocol-probe, plus a Claude Code hook `waiting → done → restore`) is verified on a **Q1 HE 8K**. The **default K8 Pro has not been round-tripped on macOS** — the protocol layer is shared with the (verified) Windows path so it should work, but it is unconfirmed; a report either way is welcome.
 
-Linux runs the same POSIX code path as macOS and is exercised in CI, but has no hardware verification. The PyPI classifiers list Windows and macOS only.
+² Verified on a **Q1 HE 8K** on Arch Linux with the stock PyPI `hidapi` wheel: `0xFF60` enumerate / open / protocol-probe, `kbd-signal test`, and a Claude Code hook `waiting → done → restore`. Linux otherwise runs the same POSIX code path as macOS and is exercised in CI. The PyPI classifiers list Windows and macOS only.
 
 ## Install
 
@@ -57,6 +57,15 @@ py -m pipx ensurepath   # then open a new terminal
 Plain pip also works (`py -m pip install .`); in that case invoke the hooks with the **same interpreter** you installed into: `py -m kbd_signal hook claude`.
 
 **macOS** — install pipx with Homebrew if you don't have it (`brew install pipx && pipx ensurepath`), then `pipx install kbd-signal`. The `hidapi` wheel is self-contained (IOKit backend), so **no `brew install hidapi`** is required. Config, state, and log live in `~/Library/Application Support/kbd-signal/`.
+
+**Linux** — `pipx install kbd-signal`. kbd-signal talks through the wheel's `hidraw` module (the kernel hidraw backend), so no libusb setup is needed. `/dev/hidraw*` is root-only by default, so give your login session access to the keyboard's raw-HID interface with a udev rule, e.g. `/etc/udev/rules.d/71-kbd-signal.rules` (Q1 HE 8K shown):
+
+```
+# VIA raw HID interface only; the typing interface stays root-only
+SUBSYSTEM=="hidraw", ENV{ID_VENDOR_ID}=="3434", ENV{ID_MODEL_ID}=="1012", ENV{ID_USB_INTERFACE_NUM}=="01", TAG+="uaccess"
+```
+
+Take the three values for your board from `udevadm info -q property -n /dev/hidrawN` on the node whose interface is the raw-HID one, copied exactly as printed: udev compares them as strings, so a PID written `0B12` (the casing used in this project's config) never matches udev's `0b12`; then apply with `sudo udevadm control --reload-rules && sudo udevadm trigger --action=change --subsystem-match=hidraw`. Match on these `ENV` keys rather than `ATTRS{idVendor}` plus `ATTRS{bInterfaceNumber}`: udev requires every `ATTRS` key in a rule to match the same parent device, and those two live on different ones, so such a rule silently never matches. Keep the file name sorting before `73-seat-late.rules`, where `uaccess` is applied. Config, state, and log live in `$XDG_STATE_HOME/kbd-signal/` (default `~/.local/state/kbd-signal/`).
 
 ## Usage
 
@@ -326,7 +335,7 @@ On a VIA-compatible RGB board, run `kbd-signal setup` then `kbd-signal test`. `k
 
 ### Why is there no orange in Cursor? What about Linux, or a K8 Pro on macOS?
 
-Cursor's hooks API has no approval-wait event, so only a finished turn goes green (verified on 3.16.17). Linux is CI-only, with no hardware verification. The default K8 Pro has not been round-tripped on macOS. See [Cursor integration](#cursor-integration-since-v130--completion-notify-only) and [Platform support](#platform-support).
+Cursor's hooks API has no approval-wait event, so only a finished turn goes green (verified on 3.16.17). Linux is best-effort, verified on a Q1 HE 8K; it needs a udev rule for `/dev/hidraw*` access (see [Install](#install)). The default K8 Pro has not been round-tripped on macOS. See [Cursor integration](#cursor-integration-since-v130--completion-notify-only) and [Platform support](#platform-support).
 
 ## License
 

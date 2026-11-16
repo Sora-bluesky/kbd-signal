@@ -42,9 +42,10 @@ jobs:
         run: python -m pytest tests/ -q
       - name: Smoke - the wheel's hidraw backend loads (Linux)
         # Linux talks through `hidraw` (see _platform.hid_module); every test
-        # stubs it, so catch the wheel dropping or breaking that module here.
+        # stubs it, so catch the wheel dropping or breaking that module (or
+        # the device methods via.Keyboard calls) here.
         if: runner.os == 'Linux'
-        run: python -c "import hidraw; hidraw.enumerate(0)"
+        run: python -c "import hidraw; hidraw.enumerate(0); d = hidraw.device(); [getattr(d, m) for m in ('open_path', 'read', 'write', 'close')]"
       - name: Smoke - console script exists
         run: kbd-signal --help
       - name: Smoke - hook path is a safe no-op without a keyboard

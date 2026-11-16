@@ -48,7 +48,6 @@ class DeviceNotFound(Exception):
     pass
 
 
-
 def enumerate_raw_hid(vendor_id=None):
     """All raw-HID (0xFF60) interfaces, optionally filtered by VID.
     `kbd-signal detect --all` uses vendor_id=None to help users of other
@@ -69,6 +68,9 @@ def find_device(dev_cfg=None):
     # snapshot precisely to avoid that (#44).
     dev_cfg = config.device() if dev_cfg is None else dev_cfg
     candidates = enumerate_raw_hid(dev_cfg["vendor_id"])
+    # The backend can only be to blame when nothing enumerated at all, not
+    # when a product_id pin filtered real candidates out.
+    hint = "" if candidates else _platform.hid_backend_hint()
     if dev_cfg.get("product_id") is not None:
         candidates = [d for d in candidates
                       if d["product_id"] == dev_cfg["product_id"]]
@@ -76,7 +78,7 @@ def find_device(dev_cfg=None):
         raise DeviceNotFound(
             f"raw HID interface not found for VID "
             f"{dev_cfg['vendor_id']:#06x} (wired USB required)"
-            f"{_platform.hid_backend_hint(_platform.hid_module())}")
+            + (f". {hint}" if hint else ""))
     # Prefer the configured product substring if several boards are attached
     match = dev_cfg.get("product_match")
     if match:
@@ -176,7 +178,14 @@ class Keyboard:
         self._cfg = config.device() if dev_cfg is None else dev_cfg
         self._channel = self._cfg["v3_channel"]
         self._dev = hid.device()
-        self._dev.open_path(find_device_path(self._cfg))
+        path = find_device_path(self._cfg)
+        try:
+            self._dev.open_path(path)
+        except OSError as e:
+            hint = _platform.hid_open_hint()
+            if not hint:
+                raise
+            raise OSError(f"{e} ({path!r}). {hint}") from e
         # Per-device quirk flag (config, default off): keyboards whose firmware
         # resets color/brightness shortly after an EFFECT change opt into the
         # dark-hold workaround below. Off by default — most boards don't need it.

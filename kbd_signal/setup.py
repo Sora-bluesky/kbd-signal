@@ -13,7 +13,7 @@ gets a module named after its domain.
 import json
 import sys
 
-from . import config, states, via
+from . import _platform, config, states, via
 
 # QMK's default RGB_MATRIX order puts SOLID_COLOR at 1 and BREATHING at 2, so
 # the interview below normally ends after two questions. 0 is often "all off"
@@ -97,8 +97,10 @@ def run():
         return 1
     found = via.enumerate_raw_hid(None)
     if not found:
-        print("kbd-signal: no raw HID (0xFF60) interfaces found. Connect the "
-              "keyboard by USB cable (rear switch on Cable).", file=sys.stderr)
+        print(" ".join(filter(None, [
+            "kbd-signal: no raw HID (0xFF60) interfaces found. Connect the "
+            "keyboard by USB cable (rear switch on Cable).",
+            _platform.hid_backend_hint()])), file=sys.stderr)
         return 1
     dev = _choose_device(found)
     if dev is None:

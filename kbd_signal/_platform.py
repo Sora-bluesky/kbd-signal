@@ -100,12 +100,24 @@ def hid_module():
     return hid
 
 
-def hid_backend_hint(module):
-    """Text to append to a device-not-found error when the backend itself may
-    be the cause: on Linux without the `hidraw` module, a libusb `hid` cannot
-    see raw-HID interfaces as an ordinary user. Empty everywhere else."""
-    if sys.platform.startswith("linux") and module.__name__ != "hidraw":
-        return ("; hidapi's `hidraw` module is not installed, and if its `hid` "
-                "module is the libusb build it cannot see raw-HID interfaces "
-                "without root")
+
+def hid_backend_hint():
+    """A sentence to add to a "no raw-HID interface found" message when the
+    backend itself may be the cause: on Linux without the `hidraw` module, a
+    libusb `hid` cannot see raw-HID interfaces as an ordinary user. Empty
+    everywhere else."""
+    if sys.platform.startswith("linux") and hid_module().__name__ != "hidraw":
+        return ("hidapi's `hidraw` module is not installed; if its `hid` "
+                "module is the libusb build, it cannot see raw-HID interfaces "
+                "without root.")
+    return ""
+
+
+def hid_open_hint():
+    """A sentence to add when opening a found interface fails. On Linux the
+    usual cause is /dev/hidraw* being root-only; enumeration reads sysfs and
+    succeeds regardless, so this is where a missing udev rule shows up."""
+    if sys.platform.startswith("linux"):
+        return ("On Linux, /dev/hidraw* is root-only by default; grant access "
+                "with a udev rule (see README: Install, Linux).")
     return ""

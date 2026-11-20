@@ -100,7 +100,6 @@ def hid_module():
     return hid
 
 
-
 def hid_backend_hint():
     """A sentence to add to a "no raw-HID interface found" message when the
     backend itself may be the cause: on Linux without the `hidraw` module, a

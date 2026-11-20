@@ -2,7 +2,7 @@
 
 [English](README.md) | [日本語](README.ja.md)
 
-Claude Code / Codex / Grok / Cursor のステータス(承認待ち・タスク完了・エラー。Cursor は完了通知のみ)を **VIA 対応キーボードのバックライト演出**で通知する Windows / macOS 用 CLI(デフォルト設定は Keychron K8 Pro)。
+Claude Code / Codex / Grok / Cursor のステータス(承認待ち・タスク完了・エラー。Cursor は完了通知のみ)を **VIA 対応キーボードのバックライト演出**で通知する Windows / macOS / Linux 用 CLI(デフォルト設定は Keychron K8 Pro)。
 
 純正ファームウェアのまま、VIA raw HID プロトコル(usage page `0xFF60`)で RGB マトリクスを直接制御する。ファームウェア書き換え不要(v2/v3 プロトコルは自動判別)。
 
@@ -18,7 +18,7 @@ Claude Code / Codex / Grok / Cursor のステータス(承認待ち・タスク�
 
 ### 復元モード(状態ディレクトリの `config.json`)
 
-状態ディレクトリは Windows が `%LOCALAPPDATA%\kbd-signal`、macOS が `~/Library/Application Support/kbd-signal`。
+状態ディレクトリは Windows が `%LOCALAPPDATA%\kbd-signal`、macOS が `~/Library/Application Support/kbd-signal`、Linux が `$XDG_STATE_HOME/kbd-signal`(既定 `~/.local/state/kbd-signal`)。
 
 ```json
 {"restore": "off"}
@@ -50,6 +50,7 @@ hue は QMK のホイールで赤 0 / オレンジ 21 / 緑 85。`hue` / `sat` /
 
 - **背面スイッチ Cable(有線)時のみ動作**。BT モードではケーブルを挿していても raw HID インターフェースが列挙されない(実機確認済み)
 - macOS では追加の権限やライブラリは不要(`hidapi` の macOS wheel は IOKit バックエンドで自己完結。`brew install hidapi` は不要)
+- Linux では `/dev/hidraw*` を開けるようにする udev ルールが必要([インストール](#インストール)を参照)
 - キーボード未接続時、hook 系コマンド(`hook` / `set` / `restore`)は exit 0 で静かに no-op(hooks を絶対にブロックしない)。診断系(`setup` / `export` / `detect` / `test` / `raw-effect`)は未検出を報告して exit 1
 - **VIA アプリ / Keychron Launcher と同時使用しない**(raw HID 書き込みが競合する)
 - Codex はライフサイクルフック対応版が必要。`codex features list` で `hooks` が有効か確認できる
@@ -120,6 +121,8 @@ kbd-signal hook cursor           # Cursor hooks 用(stdin JSON・完了通知の
 restore のたびに演出色が戻ってくる(または Fn 点灯で演出色が出る)場合は、キーボードの電源を入れ直す。EEPROM には一切書き込んでいないため、電源再投入で必ず本来のユーザー設定に戻る。
 
 逆に `"baseline"` モードで、それまで点灯設定に戻っていたのに信号の合間が消灯に変わった場合は(`"off"` モードでは消灯が正常動作)、snapshot が信号残骸と判定されて baseline が破棄された可能性が高い(残骸をユーザー設定として書き戻さないためのガード)。kbd-signal は過去に捕捉済みの「信号パターンに一致しなかった設定」へフォールバックする。それがまだ無い場合(アップグレード直後・新規導入時)は、電源を入れ直すか別の点灯パターンに切り替えて自分の設定を実際に表示させると、次の信号開始時に捕捉されて以後持ち越される。Fn 点灯だけでは不十分(残骸の輝度が上がるだけのことがある)。
+
+Linux で `kbd-signal detect` がキーボードを表示したあと `open failed` で失敗する場合は、raw HID のノードは見えているが開けていない。多くは[インストール](#インストール)の udev ルールが無いか、そのノードに一致していない。このとき `kbd-signal test` は `keyboard unavailable` とだけ表示し、詳しいエラーは状態ディレクトリの `kbd-signal.log` に書かれる。`sudo kbd-signal detect` が成功すれば、原因は権限。
 
 ## エージェント連携
 

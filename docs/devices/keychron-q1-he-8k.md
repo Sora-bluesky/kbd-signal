@@ -2,7 +2,7 @@
 
 [English](keychron-q1-he-8k.md) | [日本語](keychron-q1-he-8k.ja.md)
 
-Verified on real hardware. Preset: [`examples/config.q1-he-8k.json`](../../examples/config.q1-he-8k.json) — copy its `device` block into your `config.json`.
+Verified on real hardware on macOS and Linux (Arch Linux). Preset: [`examples/config.q1-he-8k.json`](../../examples/config.q1-he-8k.json) — copy its `device` block into your `config.json`.
 
 ## Config
 

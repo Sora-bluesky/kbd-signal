@@ -2,7 +2,7 @@
 
 [English](keychron-q1-he-8k.md) | [日本語](keychron-q1-he-8k.ja.md)
 
-実機で確認済み。プリセット: [`examples/config.q1-he-8k.json`](../../examples/config.q1-he-8k.json) — `device` ブロックを `config.json` にコピーして使う。
+macOS と Linux(Arch Linux)の実機で確認済み。プリセット: [`examples/config.q1-he-8k.json`](../../examples/config.q1-he-8k.json) — `device` ブロックを `config.json` にコピーして使う。
 
 ## 設定
 

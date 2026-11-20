@@ -2,7 +2,7 @@
 
 [English](README.md) | [日本語](README.ja.md)
 
-Turn a **VIA-compatible RGB keyboard's backlight into a status lamp** for AI coding agents on Windows and macOS (defaults target the Keychron K8 Pro). When Claude Code, Codex, or Grok waits for your approval, your keyboard starts breathing orange — no need to watch the screen.
+Turn a **VIA-compatible RGB keyboard's backlight into a status lamp** for AI coding agents on Windows, macOS, and Linux (defaults target the Keychron K8 Pro). When Claude Code, Codex, or Grok waits for your approval, your keyboard starts breathing orange — no need to watch the screen.
 
 Works on **stock firmware** (no flashing) by speaking the VIA raw HID protocol directly.
 
@@ -18,7 +18,7 @@ Before signaling, the current lighting (effect / speed / brightness / color) is 
 
 ## Requirements & limitations
 
-- Windows or macOS, Python 3.11+ (`hidapi` is the only dependency; its macOS wheel is self-contained via IOKit, so no Homebrew `hidapi` is needed)
+- Windows, macOS, or Linux, Python 3.11+ (`hidapi` is the only dependency; its macOS wheel is self-contained via IOKit, so no Homebrew `hidapi` is needed). On Linux, a udev rule must grant access to `/dev/hidraw*` (see [Install](#install))
 - Keychron K8 Pro connected via **USB cable with the rear switch set to "Cable"**. Raw HID is not available over Bluetooth — measured: in BT mode with the cable attached, the USB HID collections enumerate but the `0xFF60` raw interface does not
 - When the keyboard is absent (BT mode, unplugged), the hook-facing commands (`hook`, `set`, `restore`) silently no-op with exit 0 — hooks are never blocked. Diagnostic commands (`setup`, `export`, `detect`, `test`, `raw-effect`) report the missing device and exit 1
 - Do not run the VIA app / Keychron Launcher at the same time (concurrent raw HID writes race)
@@ -87,7 +87,7 @@ kbd-signal hook cursor           # Cursor hooks (JSON on stdin; completion only)
 
 ### Restore mode (`config.json` in the state dir)
 
-The state dir is `%LOCALAPPDATA%\kbd-signal` on Windows and `~/Library/Application Support/kbd-signal` on macOS.
+The state dir is `%LOCALAPPDATA%\kbd-signal` on Windows, `~/Library/Application Support/kbd-signal` on macOS, and `$XDG_STATE_HOME/kbd-signal` (default `~/.local/state/kbd-signal`) on Linux.
 
 ```json
 {"restore": "off"}
@@ -130,6 +130,8 @@ The Fn backlight on/off flag is not readable over VIA, which is why `"off"` exis
 If restores keep bringing back a signal color (or an Fn wake-up shows one), power-cycle the keyboard. Nothing is ever written to EEPROM, so it always comes back with your real settings.
 
 If a setup that used to come back lit starts staying dark between signals in `"baseline"` mode (in `"off"` mode that is the configured behavior), the likely cause is the snapshot guard discarding a baseline that looked like a leftover signal (writing it back would restore the signal forever). kbd-signal falls back to the last capture that did not look like a signal; until one exists — right after an upgrade or a fresh install — power-cycle the keyboard or switch to a different lighting pattern so your own settings are actually visible, and the next signal captures them. An Fn wake-up alone is not enough here: it can raise the brightness on the leftover signal itself.
+
+On Linux, if `detect` finds the board but `test` fails with `open failed`, the udev rule from [Install](#install) is missing or does not match the raw-HID node. Running `kbd-signal test` as root works, which confirms that the problem is permissions.
 
 ## Claude Code integration
 
@@ -335,9 +337,9 @@ Yes. Override the fields you want under `states` in `config.json`. `effect` name
 
 On a VIA-compatible RGB board, run `kbd-signal setup` then `kbd-signal test`. `kbd-signal export` prints a preset skeleton for a pull request. Single-color backlights are out of scope. Verified device pages are listed under [Verified devices](#verified-devices).
 
-### Why is there no orange in Cursor? What about Linux, or a K8 Pro on macOS?
+### Why is there no orange in Cursor? What about a K8 Pro on macOS?
 
-Cursor's hooks API has no approval-wait event, so only a finished turn goes green (verified on 3.16.17). Linux is supported and verified on a Q1 HE 8K; it needs a udev rule for `/dev/hidraw*` access (see [Install](#install)). The default K8 Pro has not been round-tripped on macOS. See [Cursor integration](#cursor-integration-since-v130--completion-notify-only) and [Platform support](#platform-support).
+Cursor's hooks API has no approval-wait event, so only a finished turn goes green (verified on 3.16.17). The default K8 Pro has not been round-tripped on macOS. See [Cursor integration](#cursor-integration-since-v130--completion-notify-only) and [Platform support](#platform-support).
 
 ## License
 

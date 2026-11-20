@@ -131,7 +131,7 @@ If restores keep bringing back a signal color (or an Fn wake-up shows one), powe
 
 If a setup that used to come back lit starts staying dark between signals in `"baseline"` mode (in `"off"` mode that is the configured behavior), the likely cause is the snapshot guard discarding a baseline that looked like a leftover signal (writing it back would restore the signal forever). kbd-signal falls back to the last capture that did not look like a signal; until one exists — right after an upgrade or a fresh install — power-cycle the keyboard or switch to a different lighting pattern so your own settings are actually visible, and the next signal captures them. An Fn wake-up alone is not enough here: it can raise the brightness on the leftover signal itself.
 
-On Linux, if `detect` finds the board but `test` fails with `open failed`, the udev rule from [Install](#install) is missing or does not match the raw-HID node. Running `kbd-signal test` as root works, which confirms that the problem is permissions.
+On Linux, if `kbd-signal detect` prints the board and then fails with `open failed`, kbd-signal can see the raw-HID node but cannot open it. The usual cause is a udev rule from [Install](#install) that is missing or does not match that node. In this case `kbd-signal test` prints only `keyboard unavailable`, and the full error goes to `kbd-signal.log` in the state dir. If `sudo kbd-signal detect` succeeds, the cause is permissions.
 
 ## Claude Code integration
 

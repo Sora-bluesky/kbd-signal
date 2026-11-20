@@ -63,11 +63,11 @@ hue は QMK のホイールで赤 0 / オレンジ 21 / 緑 85。`hue` / `sat` /
 |----|-----------|---------|
 | Windows | ✅ 対応 | Keychron K8 Pro(デフォルト)・実機 |
 | macOS | ✅ 対応 | Keychron Q1 HE 8K・実機¹ |
-| Linux | 🧪 ベストエフォート | CI のみ・実機検証なし |
+| Linux | ✅ 対応 | Keychron Q1 HE 8K・実機² |
 
 ¹ macOS の raw HID(`0xFF60` の列挙 / open / プロトコル判別 + Claude Code hook `waiting → done → restore`)は **Q1 HE 8K** で実機検証済み。**デフォルト機種の K8 Pro は macOS での set/restore ラウンドトリップが未検証** — プロトコル層は(検証済みの)Windows と共通なので動作する見込みだが未確認(動作報告歓迎)。
 
-Linux は macOS と同じ POSIX 経路で動作し CI でも検証しているが、実機検証はない。PyPI classifier は Windows / macOS のみを記載する。
+² Linux は **Q1 HE 8K**(Arch Linux・PyPI の `hidapi` wheel そのまま)で実機検証済み: `0xFF60` の列挙 / open / プロトコル判別、`kbd-signal test`、Claude Code hook `waiting → done → restore`。それ以外は macOS と同じ POSIX 経路で動作し CI でも検証している。Windows / macOS と違い、`/dev/hidraw*` へのアクセスに udev ルールが必要([インストール](#インストール)を参照)。
 
 ## インストール
 
@@ -87,6 +87,17 @@ py -m pipx ensurepath   # 実行後、新しいターミナルを開く
 素の pip(`py -m pip install .`)でも動くが、その場合フックは**インストール先と同じインタプリタ**で `py -m kbd_signal hook claude` と呼ぶこと。
 
 **macOS** — pipx が無ければ Homebrew で入れる(`brew install pipx && pipx ensurepath`)。あとは `pipx install kbd-signal`。`hidapi` の wheel は IOKit バックエンドで自己完結するため **`brew install hidapi` は不要**。設定・状態・ログは `~/Library/Application Support/kbd-signal/` に置かれる。
+
+**Linux** — `pipx install kbd-signal`。kbd-signal は wheel 同梱の `hidraw` モジュール(カーネルの hidraw バックエンド)で通信するので、libusb の設定は不要。`/dev/hidraw*` は既定で root 専用のため、udev ルールでログイン中のユーザーにキーボードの raw HID インターフェースだけを開放する。例: `/etc/udev/rules.d/71-kbd-signal.rules`(Q1 HE 8K の場合):
+
+```
+# VIA raw HID インターフェースのみ。キー入力側のインターフェースは root 専用のまま
+# systemd 258 未満は hidraw に usb_id を実行しないので、ここで取り込む
+SUBSYSTEM=="hidraw", SUBSYSTEMS=="usb", ENV{ID_BUS}=="", IMPORT{builtin}="usb_id"
+SUBSYSTEM=="hidraw", ENV{ID_VENDOR_ID}=="3434", ENV{ID_MODEL_ID}=="1012", ENV{ID_USB_INTERFACE_NUM}=="01", TAG+="uaccess"
+```
+
+3つの値は、raw HID 側のノードに対する `udevadm info -a -n /dev/hidrawN` の `ATTRS{idVendor}` / `ATTRS{idProduct}` / `ATTRS{bInterfaceNumber}` で確認し(systemd のバージョンを問わず使える)、表示どおりに書き写す。udev は文字列として比較するので、このプロジェクトの config の表記 `0B12` のように大文字で書くと、udev の `0b12` に一致しない。適用は `sudo udevadm control --reload-rules && sudo udevadm trigger --action=change --subsystem-match=hidraw`。`ATTRS{idVendor}` と `ATTRS{bInterfaceNumber}` の組み合わせではなく、この `ENV` キーで書くこと: udev は1つのルール内の `ATTRS` がすべて同じ親デバイスに一致することを要求し、この2つは別の親にあるため、そのルールは無音で一致しない。`usb_id` を取り込む1行目も省略しないこと: hidraw にこれらのキーを付ける systemd のルール(`60-persistent-hidraw.rules`)は v258 で追加されたもので、それより古い環境(例: systemd 255 の Ubuntu 24.04 LTS)では1行目が無いとルールが無音で何もしない。ファイル名は `uaccess` を適用する `73-seat-late.rules` より前に並ぶようにする。設定・状態・ログは `$XDG_STATE_HOME/kbd-signal/`(既定 `~/.local/state/kbd-signal/`)に置かれる。
 
 ## 使い方
 
@@ -299,7 +310,7 @@ VIA 対応の RGB なら `kbd-signal setup` のあと `kbd-signal test`。プリ
 
 ### Cursor でオレンジが出ない / Linux と macOS の K8 Pro
 
-Cursor の hooks API に承認待ちイベントが無いので、完了したターンで緑が出るだけ(3.16.17 で実測)。Linux は CI のみで実機検証はない。既定機種の K8 Pro は macOS でのラウンドトリップが未検証。[Cursor](#cursorv130完了通知のみ)と[プラットフォーム対応](#プラットフォーム対応)を参照。
+Cursor の hooks API に承認待ちイベントが無いので、完了したターンで緑が出るだけ(3.16.17 で実測)。Linux は対応済みで、Q1 HE 8K で実機検証済み。`/dev/hidraw*` へのアクセスに udev ルールが必要([インストール](#インストール)を参照)。既定機種の K8 Pro は macOS でのラウンドトリップが未検証。[Cursor](#cursorv130完了通知のみ)と[プラットフォーム対応](#プラットフォーム対応)を参照。
 
 ## License
 

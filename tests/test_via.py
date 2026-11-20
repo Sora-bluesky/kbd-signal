@@ -1,7 +1,10 @@
+import contextlib
+import sys
+import types
 import unittest
 from unittest import mock
 
-from kbd_signal import via
+from kbd_signal import _platform, via
 
 
 class SetColorTests(unittest.TestCase):
@@ -299,6 +302,95 @@ class SettleBrightnessTests(unittest.TestCase):
         # Total elapsed: at most the budget plus one in-flight write; an
         # unclamped final sleep would push past this.
         self.assertLessEqual(now[0], 2.05)
+
+
+class HidBackendTests(unittest.TestCase):
+    """_platform.hid_module() picks the hidapi module. On Linux the wheel's
+    `hid` is libusb, which cannot see usage pages as an ordinary user, so the
+    wheel's `hidraw` module must win there; elsewhere `hid` is the only one."""
+
+    @contextlib.contextmanager
+    def _host(self, platform, hid=None, hidraw=None):
+        # A None entry in sys.modules makes that import raise ImportError.
+        with mock.patch.object(_platform.sys, "platform", platform), \
+                mock.patch.dict(sys.modules, {"hid": hid, "hidraw": hidraw}):
+            yield
+
+    def test_linux_prefers_hidraw(self):
+        hid, hidraw = types.ModuleType("hid"), types.ModuleType("hidraw")
+        with self._host("linux", hid, hidraw):
+            self.assertIs(_platform.hid_module(), hidraw)
+
+    def test_linux_falls_back_to_hid_without_hidraw(self):
+        hid = types.ModuleType("hid")
+        with self._host("linux", hid, None):
+            self.assertIs(_platform.hid_module(), hid)
+
+    def test_other_platforms_use_hid(self):
+        hid, hidraw = types.ModuleType("hid"), types.ModuleType("hidraw")
+        for platform in ("win32", "darwin"):
+            with self.subTest(platform=platform), \
+                    self._host(platform, hid, hidraw):
+                self.assertIs(_platform.hid_module(), hid)
+
+    def test_enumerate_goes_through_the_selected_backend(self):
+        entry = {"usage_page": via.USAGE_PAGE, "usage": via.USAGE,
+                 "path": b"/dev/hidraw5"}
+        hid, hidraw = types.ModuleType("hid"), types.ModuleType("hidraw")
+        hid.enumerate = lambda vendor_id=0: []
+        hidraw.enumerate = lambda vendor_id=0: [entry]
+        with self._host("linux", hid, hidraw):
+            self.assertEqual(via.enumerate_raw_hid(0x3434), [entry])
+
+    def test_not_found_names_the_backend_only_on_a_linux_fallback(self):
+        cfg = {"vendor_id": 0x3434, "product_id": None}
+        hid = types.ModuleType("hid")
+        hid.enumerate = lambda vendor_id=0: []
+        hidraw = types.ModuleType("hidraw")
+        hidraw.enumerate = hid.enumerate
+        cases = [("linux", None, True), ("linux", hidraw, False),
+                 ("win32", hidraw, False), ("darwin", hidraw, False)]
+        for platform, raw, hinted in cases:
+            with self.subTest(platform=platform, hidraw=raw is not None), \
+                    self._host(platform, hid, raw), \
+                    self.assertRaises(via.DeviceNotFound) as caught:
+                via.find_device(cfg)
+            self.assertEqual("`hidraw` module" in str(caught.exception), hinted)
+
+    def test_no_backend_hint_when_a_product_pin_filtered_the_candidates(self):
+        # The board enumerated, just under another PID: the backend is fine.
+        entry = {"usage_page": via.USAGE_PAGE, "usage": via.USAGE,
+                 "product_id": 0x0B12, "path": b"/dev/hidraw5"}
+        hid = types.ModuleType("hid")
+        hid.enumerate = lambda vendor_id=0: [entry]
+        with self._host("linux", hid, None), \
+                self.assertRaises(via.DeviceNotFound) as caught:
+            via.find_device({"vendor_id": 0x3434, "product_id": 0x1012})
+        self.assertNotIn("`hidraw` module", str(caught.exception))
+
+    def test_open_failure_points_linux_users_at_the_udev_rule(self):
+        entry = {"usage_page": via.USAGE_PAGE, "usage": via.USAGE,
+                 "product_id": 0x1012, "path": b"/dev/hidraw5"}
+        cfg = {"vendor_id": 0x3434, "product_id": 0x1012, "v3_channel": 3}
+
+        class Refusing:
+            def open_path(self, path):
+                raise OSError("open failed")
+
+        for platform, hinted in (("linux", True), ("win32", False),
+                                 ("darwin", False)):
+            backend = types.ModuleType("hidraw" if hinted else "hid")
+            backend.enumerate = lambda vendor_id=0: [entry]
+            backend.device = Refusing
+            mods = ({"hidraw": backend} if hinted
+                    else {"hid": backend, "hidraw": backend})
+            with self.subTest(platform=platform), \
+                    self._host(platform, mods.get("hid", backend),
+                               mods.get("hidraw")), \
+                    self.assertRaises(OSError) as caught:
+                via.Keyboard(cfg)
+            self.assertEqual("udev rule" in str(caught.exception), hinted)
+            self.assertIn("open failed", str(caught.exception))
 
 
 if __name__ == "__main__":

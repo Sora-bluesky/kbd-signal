@@ -4,7 +4,7 @@ import argparse
 import sys
 import time
 
-from . import states, via
+from . import _platform, states, via
 
 
 def cmd_detect(args):
@@ -12,7 +12,9 @@ def cmd_detect(args):
     if getattr(args, "all", False):
         found = via.enumerate_raw_hid(None)
         if not found:
-            print("No raw HID (0xFF60) interfaces found on any device.")
+            print(" ".join(filter(None, [
+                "No raw HID (0xFF60) interfaces found on any device.",
+                _platform.hid_backend_hint()])))
             return 1
         for d in found:
             print(f"found: {d.get('manufacturer_string')} {d.get('product_string')} "
@@ -25,9 +27,11 @@ def cmd_detect(args):
     dev_cfg = config.device()
     found = via.enumerate_raw_hid(dev_cfg["vendor_id"])
     if not found:
-        print("Configured keyboard's raw HID interface not found. "
-              "Connect via USB cable (rear switch on Cable). "
-              "Use `kbd-signal detect --all` to list every raw-HID device.")
+        print(" ".join(filter(None, [
+            "Configured keyboard's raw HID interface not found. "
+            "Connect via USB cable (rear switch on Cable). "
+            "Use `kbd-signal detect --all` to list every raw-HID device.",
+            _platform.hid_backend_hint()])))
         return 1
     for d in found:
         print(f"found: {d.get('product_string')} "
